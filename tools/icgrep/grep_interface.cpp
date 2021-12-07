@@ -98,7 +98,8 @@ BinaryFilesMode BinaryFilesFlag;
 static cl::opt<BinaryFilesMode, true> BinaryFilesOption("binary-files", cl::desc("Processing mode for binary files:"),
                                                      cl::values(clEnumValN(Binary, "binary", "Report match/non-match without printing matches."),
                                                                 clEnumValN(WithoutMatch, "without-match", "Always report as non-matching."),
-                                                                clEnumValN(Text, "text", "Treat binary files as text.")
+                                                                clEnumValN(Text, "text", "Treat binary files as text."),
+                                                                clEnumValN(ZTFCompressed, "ZTFCompressed", "File compressed with ZTF-phrase-compression.")
                                                                 CL_ENUM_VAL_SENTINEL), cl::cat(Input_Options), cl::location(BinaryFilesFlag), cl::init(WithoutMatch));
     
 

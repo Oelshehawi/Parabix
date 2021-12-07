@@ -66,11 +66,24 @@
 #include <kernel/util/debug_display.h>
 #include <util/aligned_allocator.h>
 
+#include "../../tools/ztf8/ztf-logic.h"
+#include "../../tools/ztf8/ztf-scan.h"
+#include "../../tools/ztf8/ztf-phrase-scan.h"
+#include "../../tools/ztf8/ztf-phrase-logic.h"
+
 using namespace llvm;
 using namespace cc;
 using namespace kernel;
 
 namespace grep {
+
+EncodingInfo encodingScheme1(8,
+                             {{3, 3, 2, 0xC0, 8, 0},
+                              {4, 4, 2, 0xC8, 8, 0},
+                              {5, 8, 2, 0xD0, 8, 0},
+                              {9, 16, 3, 0xE0, 8, 0},
+                              {17, 32, 4, 0xF0, 8, 0},
+                             });
 
 const auto ENCODING_BITS = 8;
 
@@ -358,6 +371,52 @@ void GrepEngine::initREs(std::vector<re::RE *> & REs) {
 }
 
 StreamSet * GrepEngine::getBasis(const std::unique_ptr<ProgramBuilder> & P, StreamSet * ByteStream) {
+    if(mBinaryFilesMode == argv::ZTFCompressed) {
+        StreamSet * const ztfHashBasis = P->CreateStreamSet(8);
+        P->CreateKernelCall<S2PKernel>(ByteStream, ztfHashBasis);
+        StreamSet * const ztfInsertionLengths = P->CreateStreamSet(5);
+        StreamSet * countStream = P->CreateStreamSet(1);
+        P->CreateKernelCall<ZTF_PhraseExpansionDecoder>(encodingScheme1, ztfHashBasis, ztfInsertionLengths, countStream);
+        StreamSet * const ztfRunSpreadMask = InsertionSpreadMask(P, ztfInsertionLengths);
+        StreamSet * const ztfHash_u8_Basis = P->CreateStreamSet(8);
+        SpreadByMask(P, ztfRunSpreadMask, ztfHashBasis, ztfHash_u8_Basis);
+
+        StreamSet * decodedMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size());
+        StreamSet * hashtableMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size());
+        StreamSet * const hashtableSpan = P->CreateStreamSet(1);
+        P->CreateKernelCall<ZTF_PhraseDecodeLengths>(encodingScheme1, 2/*SymCount*/, ztfHash_u8_Basis, decodedMarks, hashtableMarks, hashtableSpan);
+
+        StreamSet * const ztfHash_u8bytes = P->CreateStreamSet(1, 8);
+        P->CreateKernelCall<P2SKernel>(ztfHash_u8_Basis, ztfHash_u8bytes);
+
+        StreamSet * u8bytes = ztfHash_u8bytes;
+        for(unsigned sym = 0; sym < 2/*SymCount*/; sym++) {
+            unsigned startIdx = 0;
+            if (sym > 0) {
+                startIdx = 3;
+            }
+            for (unsigned i = startIdx; i < encodingScheme1.byLength.size(); i++) {
+                StreamSet * const hashGroupMarks = P->CreateStreamSet(1);
+                P->CreateKernelCall<StreamSelect>(hashGroupMarks, Select(hashtableMarks, {(sym * encodingScheme1.byLength.size()) + i}));
+                StreamSet * const groupDecoded = P->CreateStreamSet(1);
+                P->CreateKernelCall<StreamSelect>(groupDecoded, Select(decodedMarks, {(sym * encodingScheme1.byLength.size()) + i}));
+
+                StreamSet * const input_bytes = u8bytes;
+                StreamSet * const output_bytes = P->CreateStreamSet(1, 8);
+                P->CreateKernelCall<SymbolGroupDecompression>(encodingScheme1, sym, i, hashGroupMarks, groupDecoded, input_bytes, output_bytes);
+                u8bytes = output_bytes;
+            }
+        }
+        StreamSet * const decoded = P->CreateStreamSet(8);
+        P->CreateKernelCall<S2PKernel>(u8bytes, decoded);
+        StreamSet * const decoded_basis = P->CreateStreamSet(8);
+        FilterByMask(P, hashtableSpan, decoded, decoded_basis);
+
+        StreamSet * const decoded_bytes = P->CreateStreamSet(1, 8);
+        P->CreateKernelCall<P2SKernel>(decoded_basis, decoded_bytes);
+        ByteStream = decoded_bytes;
+        mBinaryFilesMode = argv::Text;
+    }
     if (hasComponent(mExternalComponents, Component::S2P)) {
         StreamSet * BasisBits = P->CreateStreamSet(ENCODING_BITS, 1);
         if (PabloTransposition) {

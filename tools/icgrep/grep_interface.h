@@ -46,7 +46,7 @@ extern std::string FileFlag; // -f
 // Use DirectoriesFlag==Recurse to test for recursive mode.
 //extern bool TextFlag; // -a
 //extern bool BinaryFlag; // -U
-enum BinaryFilesMode {Binary, WithoutMatch, Text};
+enum BinaryFilesMode {Binary, WithoutMatch, Text, ZTFCompressed};
 extern BinaryFilesMode BinaryFilesFlag;
     
 extern bool NullDataFlag; // -z
