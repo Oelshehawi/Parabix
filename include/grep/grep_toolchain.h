@@ -13,6 +13,7 @@ extern int ScanMatchBlocks;
 extern int MatchCoordinateBlocks;
 extern unsigned ByteCClimit;
 extern bool TraceFiles;
+extern bool ZTF8Indexing;
 
 }
 

@@ -319,6 +319,16 @@ void GrepEngine::initREs(std::vector<re::RE *> & REs) {
             break;
         }
     }
+
+    for (unsigned i = 0; i < mREs.size(); ++i) {
+        if (MatchesWordCharactersOnly(mREs[i])) {
+            //llvm::errs() << "MatchesWordCharactersOnly" << "\n";
+            setComponent(mExternalComponents, Component::ZTF8index);
+            ZTF8Indexing = true;
+            break;
+        }
+    }
+
     if (UnicodeIndexing) {
         setComponent(mExternalComponents, Component::S2P);
         setComponent(mExternalComponents, Component::UTF8index);
