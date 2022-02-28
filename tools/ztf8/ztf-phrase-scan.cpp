@@ -855,25 +855,25 @@ FilterCompressedData::FilterCompressedData(BuilderRef b,
                                 unsigned numSyms,
                                 StreamSet * byteData,
                                 StreamSet * combinedMask,
+                                StreamSet * symEndMarker,
                                 StreamSet * cmpBytes,
+                                StreamSet * partialSum,
                                 unsigned strideBlocks)
 : MultiBlockKernel(b, "FilterCompressedData" +  std::to_string(strideBlocks) + "_" + std::to_string(numSyms),
                    {Binding{"phraseMask", combinedMask},
+                    Binding{"symEndMarker", symEndMarker},
                     Binding{"byteData", byteData, FixedRate(), LookBehind(33)}},
                    {}, {}, {},
                    {InternalScalar{b->getBitBlockType(), "pendingMaskInverted"}}),
 mNumSym(numSyms), mSubStride(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS)) {
-
-
-
     if (DelayedAttributeIsSet()) {
-        mOutputStreamSets.emplace_back("cmpBytes", cmpBytes, PopcountOf("phraseMask") /*FixedRate(), Delayed(encodingScheme.maxSymbolLength()) */);
+        mOutputStreamSets.emplace_back("cmpBytes", cmpBytes, BoundedRate(0, 1)/*PopcountOf("phraseMask") FixedRate(), Delayed(encodingScheme.maxSymbolLength()) */);
+        mOutputStreamSets.emplace_back("partialSum", partialSum, FixedRate(ProcessingRate::Rational{1, 1024000}), Delayed(1));
     } else {
         mOutputStreamSets.emplace_back("cmpBytes", cmpBytes, PopcountOf("phraseMask"));
         addInternalScalar(ArrayType::get(b->getInt8Ty(), encodingScheme.maxSymbolLength()), "pendingOutput");
     }
     setStride(1024000);
-    // addAttribute(HasStrideBound());
 }
 // use symbolEndMarks and check if accessible byte_pos > last accessible symbol_end markPos to ensure complete phrase is written 
 // in a single segment
@@ -925,6 +925,8 @@ void FilterCompressedData::generateMultiBlockLogic(BuilderRef b, Value * const n
     strideNo->addIncoming(sz_ZERO, entryBlock);
     PHINode * const segWritePosPhi = b->CreatePHI(sizeTy, 2);
     segWritePosPhi->addIncoming(initialProducedBytes, entryBlock);
+    PHINode * const segFullPhrasePos = b->CreatePHI(sizeTy, 2);
+    segFullPhrasePos->addIncoming(initialProducedBytes, entryBlock);
     Value * nextStrideNo = b->CreateAdd(strideNo, sz_ONE);
     Value * stridePos = b->CreateAdd(initialPos, b->CreateMul(strideNo, sz_STRIDE));
     Value * strideBlockOffset = b->CreateMul(strideNo, sz_BLOCKS_PER_STRIDE);
@@ -933,9 +935,11 @@ void FilterCompressedData::generateMultiBlockLogic(BuilderRef b, Value * const n
     b->SetInsertPoint(subStrideMaskPrep);
     PHINode * const subStrideNo = b->CreatePHI(sizeTy, 2);
     subStrideNo->addIncoming(sz_ZERO, stridePrologue);
-    // starts from 1MB boundary for every 1MB stride - starts where the prev segment dictionary ended
     PHINode * const writePosPhi = b->CreatePHI(sizeTy, 2);
     writePosPhi->addIncoming(segWritePosPhi, stridePrologue);
+    PHINode * const fullPhraseProducedInStridePhi = b->CreatePHI(sizeTy, 2);
+    fullPhraseProducedInStridePhi->addIncoming(segFullPhrasePos, stridePrologue);
+
     Value * nextSubStrideNo = b->CreateAdd(subStrideNo, sz_ONE);
     Value * subStridePos = b->CreateAdd(stridePos, b->CreateMul(subStrideNo, sz_SUB_STRIDE));
     Value * readSubStrideBlockOffset = b->CreateAdd(strideBlockOffset,
@@ -955,6 +959,8 @@ void FilterCompressedData::generateMultiBlockLogic(BuilderRef b, Value * const n
     phraseWordPhi->addIncoming(sz_ZERO, strideMasksReady);
     PHINode * const subStrideWritePos = b->CreatePHI(sizeTy, 2);
     subStrideWritePos->addIncoming(writePosPhi, strideMasksReady);
+    PHINode * const subStrideFullPhrasePhi = b->CreatePHI(sizeTy, 2);
+    subStrideFullPhrasePhi->addIncoming(fullPhraseProducedInStridePhi, strideMasksReady);
 
     Value * phraseWordIdx = b->CreateCountForwardZeroes(phraseMaskPhi, "symIdx");
     Value * nextphraseWord = b->CreateZExtOrTrunc(b->CreateLoad(b->CreateGEP(phraseWordBasePtr, phraseWordIdx)), sizeTy);
@@ -962,6 +968,16 @@ void FilterCompressedData::generateMultiBlockLogic(BuilderRef b, Value * const n
     Value * phraseWordPos = b->CreateAdd(subStridePos, b->CreateMul(phraseWordIdx, sw.WIDTH));
     Value * phraseMarkPosInWord = b->CreateCountForwardZeroes(thephraseWord);
     Value * phraseMarkPos = b->CreateAdd(phraseWordPos, phraseMarkPosInWord);
+
+    //byte-boundary for phraseWordPos
+    Value * maskBit = sz_ONE;
+    Value * startBase = b->CreateSub(phraseMarkPos, b->CreateURem(phraseMarkPos, sz_EIGHT));
+    Value * startBitOffset = b->CreateSub(phraseMarkPos, startBase);
+    maskBit = b->CreateShl(maskBit, startBitOffset);
+    Value * const maskBasePtr = b->CreateBitCast(b->getRawInputPointer("symEndMarker", startBase), sizeTy->getPointerTo());
+    Value * initialEndMark = b->CreateAlignedLoad(maskBasePtr, 1);
+    Value * checkBitSet = b->CreateAnd(initialEndMark, maskBit);
+    Value * updatedIdx = b->CreateSelect(b->CreateICmpUGE(checkBitSet, sz_ONE), subStrideWritePos, subStrideFullPhrasePhi);
 
     b->CreateMemCpy(b->getRawOutputPointer("cmpBytes", subStrideWritePos), b->getRawInputPointer("byteData", phraseMarkPos), sz_ONE, 1);
     Value * dropPhrase = b->CreateResetLowestBit(thephraseWord);
@@ -973,27 +989,48 @@ void FilterCompressedData::generateMultiBlockLogic(BuilderRef b, Value * const n
     phraseMaskPhi->addIncoming(nextphraseMask, currentBB);
     phraseWordPhi->addIncoming(dropPhrase, currentBB);
     subStrideWritePos->addIncoming(nextWritePos, currentBB);
+    subStrideFullPhrasePhi->addIncoming(updatedIdx, currentBB);
     b->CreateCondBr(b->CreateICmpNE(nextphraseMask, sz_ZERO), filteringLoop, subStridePhrasesDone);
 
     b->SetInsertPoint(subStridePhrasesDone);
     PHINode * const nextSubStrideWritePos = b->CreatePHI(sizeTy, 2);
     nextSubStrideWritePos->addIncoming(nextWritePos, filteringLoop);
     nextSubStrideWritePos->addIncoming(writePosPhi, strideMasksReady);
+
+    PHINode * const nextFullPhraseEndPos = b->CreatePHI(sizeTy, 2);
+    // b->CallPrintInt("updatedIdx", updatedIdx);
+    nextFullPhraseEndPos->addIncoming(updatedIdx, filteringLoop);
+    nextFullPhraseEndPos->addIncoming(fullPhraseProducedInStridePhi, strideMasksReady);
+
     BasicBlock * stridePhrasesDoneBB = b->GetInsertBlock();
     subStrideNo->addIncoming(nextSubStrideNo, stridePhrasesDoneBB);
     writePosPhi->addIncoming(nextSubStrideWritePos, stridePhrasesDoneBB);
+    fullPhraseProducedInStridePhi->addIncoming(nextFullPhraseEndPos, stridePhrasesDoneBB);
     b->CreateCondBr(b->CreateICmpNE(nextSubStrideNo, totalSubStrides), subStrideMaskPrep, checkFinalLoopCond);
 
     b->SetInsertPoint(checkFinalLoopCond);
     strideNo->addIncoming(nextStrideNo, checkFinalLoopCond);
     Value * segWritePosUpdate = nextSubStrideWritePos; //b->CreateAdd(nextSubStrideWritePos, sz_ONE);
     segWritePosPhi->addIncoming(segWritePosUpdate, checkFinalLoopCond);
+    segFullPhrasePos->addIncoming(nextFullPhraseEndPos, checkFinalLoopCond);
+    Value * symPtr1 = b->CreateBitCast(b->getRawInputPointer("byteData", nextFullPhraseEndPos), b->getInt8PtrTy());
+    // b->CreateWriteCall(b->getInt32(STDERR_FILENO), symPtr1, b->CreateAdd(b->getSize(7), sz_ONE));
+    b->CallPrintInt("segWritePosUpdate", segWritePosUpdate);
+
+    Value * segProcessed = b->CreateAdd(initialPos, b->CreateMul(sz_STRIDE, strideNo));
+    segProcessed = b->CreateUDiv(segProcessed, sz_STRIDE);
+    // b->CallPrintInt("segProcessed", segProcessed);
+    b->CreateStore(b->CreateTrunc(b->CreateSelect(b->isFinal(), segWritePosUpdate, nextFullPhraseEndPos), b->getInt64Ty()), b->getRawOutputPointer("partialSum", segProcessed));
+    // b->CallPrintInt("nextFullPhraseEndPos", nextFullPhraseEndPos);
+
     b->CreateCondBr(b->CreateICmpNE(nextStrideNo, numOfStrides), stridePrologue, stridesDone);
     b->SetInsertPoint(stridesDone);
-    // b->setProducedItemCount("cmpBytes", segWritePosUpdate);
+    // Value * processedBytes = b->CreateSelect(b->isFinal(), avail, b->CreateSub(phraseWordPos, b->CreateSub(segWritePosUpdate, nextFullPhraseEndPos)));
+    // b->setProcessedItemCount("byteData", processedBytes);
+    b->setProducedItemCount("cmpBytes", segWritePosUpdate);
     b->CreateCondBr(b->isFinal(), filteringMaskDone, updatePending);
     b->SetInsertPoint(updatePending);
-    // No partial phrases in the segment are written in the dicitonary. The phrase shall be moved to the next segment.
+    // No partial codewords are written across multiple segments. The full codeword shall be written in current segment.
 
     b->CreateBr(filteringMaskDone);
     b->SetInsertPoint(filteringMaskDone);
@@ -1456,121 +1493,19 @@ InterleaveCompressionSegment::InterleaveCompressionSegment(BuilderRef b,
                                     StreamSet * dictData,
                                     StreamSet * codedBytes,
                                     StreamSet * dictPartialSum,
-                                    StreamSet * compressedMask,
+                                    StreamSet * cmpPartialSum,
                                     unsigned strideBlocks)
 : MultiBlockKernel(b, "InterleaveCompressionSegment" + std::to_string(strideBlocks) + "_" + std::to_string(dictData->getNumElements()) + "_" + std::to_string(codedBytes->getNumElements()),
                    {Binding{"dictPartialSum", dictPartialSum, FixedRate(1)},
-                    Binding{"compressedMask", compressedMask, FixedRate(1024000)},
+                    Binding{"cmpPartialSum", cmpPartialSum, /*FixedRate(1024000)*/ FixedRate(1)},
                     Binding{"dictData", dictData, PartialSum("dictPartialSum")},
-                    Binding{"codedBytes", codedBytes, PopcountOf("compressedMask")}},
-                   {}, {}, {}, {InternalScalar{b->getInt64Ty(), "readDictSize"}}),
+                    Binding{"codedBytes", codedBytes, PartialSum("cmpPartialSum") /*PopcountOf("compressedMask")*/}},
+                   {}, {}, {}, {}),
 mStrideBlocks(strideBlocks) {
     setStride(1);
     addAttribute(SideEffecting());
     addAttribute(ExecuteStridesIndividually());
 }
-
-#if 0
-void InterleaveCompressionSegment::generateMultiBlockLogic(BuilderRef b, Value * const numOfStrides) {
-#ifdef PRINT_INTERLEAVE_KERNEL_DEBUG_INFO
-    b->CallPrintInt("numOfStrides", numOfStrides);
-#endif
-    Constant * sz_ZERO = b->getSize(0);
-    Constant * sz_BLOCK_SIZE = b->getSize(b->getBitBlockWidth());
-    Constant * sz_ONE = b->getSize(1);
-    Constant * sz_TWO = b->getSize(2);
-    Constant * sz_BITS = b->getSize(SIZE_T_BITS);
-    Constant * const stdOutFd = b->getInt32(STDOUT_FILENO);
-
-    Type * sizeTy = b->getSizeTy();
-    BasicBlock * const entryBlock = b->GetInsertBlock();
-    BasicBlock * const stridePrologue = b->CreateBasicBlock("stridePrologue");
-    BasicBlock * const strideDone = b->CreateBasicBlock("strideDone");
-    BasicBlock * const strideCopyDone = b->CreateBasicBlock("strideCopyDone");
-
-    Value * const dictAvail = b->getAvailableItemCount("dictData");
-    Value * const cmpAvail = b->getAvailableItemCount("codedBytes");
-    Value * const dictProcessed = b->getProcessedItemCount("dictData");
-    Value * const cmpProcessed = b->getProcessedItemCount("codedBytes");
-    Value * const dictAvailCurSeg = b->getAccessibleItemCount("dictData");
-    Value * const cmpAvailCurSeg = b->getAccessibleItemCount("codedBytes");
-
-    Value * const initialReadDict = b->getProcessedItemCount("dictPartialSum");
-    Value * const prevReadDict = b->getScalarField("readDictSize");
-    Value * const toReadDict = b->CreateSub(initialReadDict, prevReadDict);
-#ifdef PRINT_INTERLEAVE_KERNEL_DEBUG_INFO
-    b->CallPrintInt("cmpAvail", cmpAvail);
-    b->CallPrintInt("dictAvail", dictAvail);
-    b->CallPrintInt("dictAvailCurSeg", dictAvailCurSeg);
-    b->CallPrintInt("cmpAvailCurSeg", cmpAvailCurSeg);
-    b->CallPrintInt("toReadDict", toReadDict);
-    b->CallPrintInt("dictData-processed", b->getProcessedItemCount("dictData"));
-    b->CallPrintInt("codedBytes-processed", b->getProcessedItemCount("codedBytes"));
-#endif
-    b->CreateBr(stridePrologue);
-
-    b->SetInsertPoint(stridePrologue);
-    PHINode * const strideNo = b->CreatePHI(b->getSizeTy(), 2);
-    strideNo->addIncoming(sz_ZERO, entryBlock);
-    // PHINode * const curDictAvailable = b->CreatePHI(b->getSizeTy(), 2);
-    // curDictAvailable->addIncoming(dictAvailCurSeg, entryBlock);
-    // PHINode * const curCmpAvailable = b->CreatePHI(b->getSizeTy(), 2);
-    // curCmpAvailable->addIncoming(cmpAvailCurSeg, entryBlock);
-    // PHINode * const dictWritten = b->CreatePHI(b->getSizeTy(), 2);
-    // dictWritten->addIncoming(sz_ZERO, entryBlock);
-    // PHINode * const cmpWritten = b->CreatePHI(b->getSizeTy(), 2);
-    // cmpWritten->addIncoming(sz_ZERO, entryBlock);
-
-    Value * const nextStrideNo = b->CreateAdd(strideNo, b->getSize(1));
-    // Value * const toCopyDict = dictAvailCurSeg;
-    // Value * const toCopyCmp = cmpAvailCurSeg;
-    Value * const toCopyFinalDict = toReadDict;
-    Value * const toCopyFinalCmp = cmpAvailCurSeg;
-    Value * const dictReadPos = dictProcessed;
-    Value * const cmpReadPos = cmpProcessed;
-    // Value * const dictWriteStartPos = initialProduced;
-    // Value * const cmpWriteStartPos = b->CreateAdd(dictWriteStartPos, toCopyFinalDict);
-#ifdef PRINT_INTERLEAVE_KERNEL_DEBUG_INFO
-    // b->CallPrintInt("strideNo", strideNo);
-    // b->CallPrintInt("toCopyFinalDict", toCopyFinalDict);
-    // b->CallPrintInt("dictCopyPos-final", dictWriteStartPos);
-    // b->CallPrintInt("cmpWriteStartPos", cmpWriteStartPos);
-    // b->CallPrintInt("dictReadPos", dictReadPos);
-    // b->CallPrintInt("cmpReadPos", cmpReadPos);
-#endif
-    b->CreateWriteCall(stdOutFd, b->getRawInputPointer("dictData", dictReadPos), toCopyFinalDict);
-    b->CreateWriteCall(stdOutFd, b->getRawInputPointer("codedBytes", cmpReadPos), toCopyFinalCmp);
-    // b->CreateWriteCall(b->getInt32(STDERR_FILENO), b->getRawInputPointer("codedBytes", cmpReadPos), toCopyFinalCmp);
-
-    // Value * const updateDictAvail = b->CreateSub(curDictAvailable, toCopyDict);
-    // Value * const updateCmpAvail = b->CreateSub(curCmpAvailable, toCopyFinalCmp);
-    // Value * const strideDictWritten = b->CreateAdd(dictWritten, toCopyFinalDict);
-    // Value * const strideCmpWritten = b->CreateAdd(cmpWritten, toCopyFinalCmp);
-#ifdef PRINT_INTERLEAVE_KERNEL_DEBUG_INFO
-    // b->CallPrintInt("updateDictAvail", updateDictAvail);
-    // b->CallPrintInt("updateCmpAvail", updateCmpAvail);
-    // b->CallPrintInt("strideDictWritten", strideDictWritten);
-#endif
-    b->CreateBr(strideDone);
-
-    b->SetInsertPoint(strideDone);
-    strideNo->addIncoming(nextStrideNo, strideDone);
-    // curDictAvailable->addIncoming(updateDictAvail, strideDone);
-    // curCmpAvailable->addIncoming(updateCmpAvail, strideDone);
-    // dictWritten->addIncoming(strideDictWritten, strideDone);
-    // cmpWritten->addIncoming(strideCmpWritten, strideDone);
-    b->setScalarField("readDictSize", initialReadDict);
-    b->CreateCondBr(b->CreateICmpNE(nextStrideNo, numOfStrides), stridePrologue, strideCopyDone);
-
-    b->SetInsertPoint(strideCopyDone);
-    Value * guaranteedProcessedDict = b->CreateAdd(dictProcessed, toReadDict);
-    // TODO: ensure a partial phrase is not copied in the segment
-    Value * guaranteedProcessedCmp = b->CreateAdd(cmpProcessed, toCopyFinalCmp);
-    b->setProcessedItemCount("dictData", b->CreateSelect(b->isFinal(), dictAvail, guaranteedProcessedDict));
-    b->setProcessedItemCount("codedBytes", b->CreateSelect(b->isFinal(), cmpAvail, guaranteedProcessedCmp));
-}
-#endif
-
 
 void InterleaveCompressionSegment::generateMultiBlockLogic(BuilderRef b, Value * const numOfStrides) {
 

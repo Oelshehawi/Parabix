@@ -28,15 +28,10 @@ protected:
 class InverseStream : public pablo::PabloKernel {
 public:
     InverseStream(BuilderRef kb,
-                StreamSet * hashMarks,
-                StreamSet * prevMarks,
-                unsigned startLgIdx,
-                unsigned groupNum,
+                StreamSet * inStream,
                 StreamSet * selected);
 protected:
     void generatePabloMethod() override;
-    unsigned mGroupNum;
-    unsigned mStartIdx;
 };
 
 /*

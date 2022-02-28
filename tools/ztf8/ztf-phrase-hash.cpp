@@ -284,18 +284,22 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
 //    P->CreateKernelCall<FileSink>(dictFileName, dict_bytes);
 
     StreamSet * const compressed_bytes = P->CreateStreamSet(1, 8);
+    StreamSet * const partialSum = P->CreateStreamSet(1, 64);
     if (UseParallelFilterByMask) {
         FilterByMask(P, combinedMask, u8bytes, compressed_bytes, /*streamOffset*/0, /*extractionFieldWidth*/64, true);
     }
     else {
-        P->CreateKernelCall<FilterCompressedData>(encodingScheme1, SymCount, u8bytes, combinedMask, compressed_bytes);
+        StreamSet * const phraseEndMarks = P->CreateStreamSet(1);
+        P->CreateKernelCall<InverseStream>(phraseRuns, phraseEndMarks);
+        P->CreateKernelCall<FilterCompressedData>(encodingScheme1, SymCount, u8bytes, combinedMask, phraseEndMarks, compressed_bytes, partialSum);
+        P->CreateKernelCall<DebugDisplayKernel>("partialSum", partialSum);
         // P->CreateKernelCall<StdOutKernel>(compressed_bytes);
     }
     // Print compressed output
 //    Scalar * outputFileName = P->getInputScalar("outputFileName");
 //    P->CreateKernelCall<FileSink>(outputFileName, compressed_bytes);
 
-    P->CreateKernelCall<InterleaveCompressionSegment>(dict_bytes, compressed_bytes, dict_partialSum, combinedMask);
+    P->CreateKernelCall<InterleaveCompressionSegment>(dict_bytes, compressed_bytes, dict_partialSum, partialSum /*combinedMask*/ );
 
     return reinterpret_cast<ztfHashFunctionType>(P->compile());
 }

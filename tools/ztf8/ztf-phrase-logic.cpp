@@ -72,25 +72,16 @@ void UpdateNextHashMarks::generatePabloMethod() {
 }
 
 InverseStream::InverseStream(BuilderRef kb,
-                StreamSet * hashMarks,
-                StreamSet * prevMarks,
-                unsigned startLgIdx,
-                unsigned groupNum,
+                StreamSet * inStream,
                 StreamSet * selected)
-: PabloKernel(kb, "InverseStream_" + std::to_string(startLgIdx) + std::to_string(groupNum),
-            {Binding{"hashMarks", hashMarks},
-             Binding{"prevMarks", prevMarks}},
-            {Binding{"selected", selected}}), mGroupNum(groupNum), mStartIdx(startLgIdx) { }
+: PabloKernel(kb, "InverseStream_",
+            {Binding{"inStream", inStream, FixedRate(), LookAhead(1)}},
+            {Binding{"selected", selected}}) { }
 
 void InverseStream::generatePabloMethod() {
     pablo::PabloBuilder pb(getEntryScope());
-    PabloAST * hashMarks = getInputStreamSet("hashMarks")[0];
-    PabloAST * prevMarks = getInputStreamSet("prevMarks")[0];
-    if (mGroupNum == mStartIdx+1) {
-        prevMarks = pb.createNot(prevMarks);
-    }
-    PabloAST * result = pb.createNot(hashMarks);
-    result = pb.createOr(result, prevMarks);
+    PabloAST * toInverse = getInputStreamSet("inStream")[0];
+    PabloAST * result = pb.createNot(pb.createLookahead(toInverse, 1));
     pb.createAssign(pb.createExtract(getOutputStreamVar("selected"), pb.getInteger(0)), result);
 
 }

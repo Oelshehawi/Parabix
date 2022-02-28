@@ -70,7 +70,9 @@ public:
                     unsigned numSyms,
                     StreamSet * byteData,
                     StreamSet * combinedMask,
+                    StreamSet * phraseEndMarks,
                     StreamSet * cmpBytes,
+                    StreamSet * partialSum,
                     unsigned strideBlocks = 8);
 private:
     void generateMultiBlockLogic(BuilderRef iBuilder, llvm::Value * const numOfStrides) override;
