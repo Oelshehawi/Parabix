@@ -867,7 +867,7 @@ FilterCompressedData::FilterCompressedData(BuilderRef b,
                    {InternalScalar{b->getBitBlockType(), "pendingMaskInverted"}}),
 mNumSym(numSyms), mSubStride(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS)) {
     if (DelayedAttributeIsSet()) {
-        mOutputStreamSets.emplace_back("cmpBytes", cmpBytes, BoundedRate(0, 1)/*PopcountOf("phraseMask") FixedRate(), Delayed(encodingScheme.maxSymbolLength()) */);
+        mOutputStreamSets.emplace_back("cmpBytes", cmpBytes, BoundedRate(0, 1)/*PopcountOf("phraseMask")*/);
         mOutputStreamSets.emplace_back("partialSum", partialSum, FixedRate(ProcessingRate::Rational{1, 1024000}), Delayed(1));
     } else {
         mOutputStreamSets.emplace_back("cmpBytes", cmpBytes, PopcountOf("phraseMask"));
@@ -977,7 +977,7 @@ void FilterCompressedData::generateMultiBlockLogic(BuilderRef b, Value * const n
     Value * const maskBasePtr = b->CreateBitCast(b->getRawInputPointer("symEndMarker", startBase), sizeTy->getPointerTo());
     Value * initialEndMark = b->CreateAlignedLoad(maskBasePtr, 1);
     Value * checkBitSet = b->CreateAnd(initialEndMark, maskBit);
-    Value * updatedIdx = b->CreateSelect(b->CreateICmpUGE(checkBitSet, sz_ONE), subStrideWritePos, subStrideFullPhrasePhi);
+    Value * updatedIdx = b->CreateSelect(b->CreateICmpUGT(checkBitSet, sz_ZERO), subStrideWritePos, subStrideFullPhrasePhi);
 
     b->CreateMemCpy(b->getRawOutputPointer("cmpBytes", subStrideWritePos), b->getRawInputPointer("byteData", phraseMarkPos), sz_ONE, 1);
     Value * dropPhrase = b->CreateResetLowestBit(thephraseWord);
@@ -985,6 +985,7 @@ void FilterCompressedData::generateMultiBlockLogic(BuilderRef b, Value * const n
     // There may be more phrases in the phrase mask.
     Value * nextphraseMask = b->CreateSelect(thisWordDone, b->CreateResetLowestBit(phraseMaskPhi), phraseMaskPhi);
     Value * const nextWritePos = b->CreateAdd(subStrideWritePos, sz_ONE);
+
     BasicBlock * currentBB = b->GetInsertBlock();
     phraseMaskPhi->addIncoming(nextphraseMask, currentBB);
     phraseWordPhi->addIncoming(dropPhrase, currentBB);
@@ -1012,15 +1013,19 @@ void FilterCompressedData::generateMultiBlockLogic(BuilderRef b, Value * const n
     strideNo->addIncoming(nextStrideNo, checkFinalLoopCond);
     Value * segWritePosUpdate = nextSubStrideWritePos; //b->CreateAdd(nextSubStrideWritePos, sz_ONE);
     segWritePosPhi->addIncoming(segWritePosUpdate, checkFinalLoopCond);
-    segFullPhrasePos->addIncoming(nextFullPhraseEndPos, checkFinalLoopCond);
-    Value * symPtr1 = b->CreateBitCast(b->getRawInputPointer("byteData", nextFullPhraseEndPos), b->getInt8PtrTy());
-    // b->CreateWriteCall(b->getInt32(STDERR_FILENO), symPtr1, b->CreateAdd(b->getSize(7), sz_ONE));
-    b->CallPrintInt("segWritePosUpdate", segWritePosUpdate);
+    Value * segFullPhraseEndPos = nextFullPhraseEndPos;
+    segFullPhrasePos->addIncoming(segFullPhraseEndPos, checkFinalLoopCond);
+    Value * symPtr1 = b->CreateBitCast(b->getRawInputPointer("byteData", b->CreateSub(phraseMarkPos, b->getSize(3))), b->getInt8PtrTy());
+    // b->CreateWriteCall(b->getInt32(STDERR_FILENO), symPtr1, b->CreateAdd(b->getSize(3), sz_ONE));
+    // b->CallPrintInt("segWritePosUpdate", segWritePosUpdate);
+    // b->CallPrintInt("phraseMarkPos", phraseMarkPos);
 
     Value * segProcessed = b->CreateAdd(initialPos, b->CreateMul(sz_STRIDE, strideNo));
     segProcessed = b->CreateUDiv(segProcessed, sz_STRIDE);
     // b->CallPrintInt("segProcessed", segProcessed);
-    b->CreateStore(b->CreateTrunc(b->CreateSelect(b->isFinal(), segWritePosUpdate, nextFullPhraseEndPos), b->getInt64Ty()), b->getRawOutputPointer("partialSum", segProcessed));
+    b->CreateStore(b->CreateTrunc(b->CreateSelect(b->isFinal(), segWritePosUpdate, b->CreateAdd(nextFullPhraseEndPos, sz_ONE) /* +1 for the next writable position*/ ), b->getInt64Ty()), b->getRawOutputPointer("partialSum", segProcessed));
+    // Value * symPtr2 = b->CreateBitCast(b->getRawOutputPointer("cmpBytes", b->CreateSub(nextFullPhraseEndPos, b->getSize(3))), b->getInt8PtrTy());
+    // b->CreateWriteCall(b->getInt32(STDERR_FILENO), symPtr2, b->CreateAdd(b->getSize(3), sz_ONE));
     // b->CallPrintInt("nextFullPhraseEndPos", nextFullPhraseEndPos);
 
     b->CreateCondBr(b->CreateICmpNE(nextStrideNo, numOfStrides), stridePrologue, stridesDone);
@@ -1233,7 +1238,7 @@ void WriteDictionary::generateMultiBlockLogic(BuilderRef b, Value * const numOfS
     Value * codeWordStartPos =  b->CreateSub(phraseMarkPosFinal, b->CreateSub(codeWordLen, sz_ONE));
     Value * const checkStartBoundary = b->CreateICmpEQ(subStrideWritePos, segWritePosPhi); // beginning of each 1MB stride
 
-    // Write initial hashtable boundary "fefe"
+    // Write initial hashtable boundary "fefe"; start boundary written only if the segment contains dictionary entry
     b->CreateBr(writeHTStart);
     b->SetInsertPoint(writeHTStart);
     PHINode * const curWritePos = b->CreatePHI(sizeTy, 2);
@@ -1429,8 +1434,8 @@ void WriteDictionary::generateMultiBlockLogic(BuilderRef b, Value * const numOfS
     b->CreateCondBr(b->CreateICmpNE(nextSubStrideNo, totalSubStrides), subStrideMaskPrep, checkWriteHTEnd);
 
     b->SetInsertPoint(checkWriteHTEnd);
-    // Note to self: check again!!!! Assumes that the stride contains no dict, only write start and end boundary
-    b->CreateCondBr(b->CreateICmpEQ(nextSubStrideWritePos, segWritePosPhi /*b->CreateAdd(stridePos, sz_TWO)*/), checkFinalLoopCond, writeHTEnd); //>>>>>>>> check again!!!! for wiki-all file
+    // Note to self: Assumes that the stride contains no dict, does not write start and end boundary
+    b->CreateCondBr(b->CreateICmpEQ(nextSubStrideWritePos, /*b->CreateAdd(segWritePosPhi, sz_TWO)*/ segWritePosPhi), checkFinalLoopCond, writeHTEnd);
     b->SetInsertPoint(writeHTEnd);
     // Write hashtable end boundary FFFF
     // b->CallPrintInt("curWritePos-writeFFFF", nextSubStrideWritePos);
@@ -1450,13 +1455,13 @@ void WriteDictionary::generateMultiBlockLogic(BuilderRef b, Value * const numOfS
 
     b->SetInsertPoint(checkFinalLoopCond);
     strideNo->addIncoming(nextStrideNo, checkFinalLoopCond);
-    Value * segWritePosUpdate = b->CreateAdd(nextSubStrideWritePos, sz_TWO);
+    Value * segWritePosUpdate = b->CreateSelect(b->CreateICmpEQ(nextSubStrideWritePos, segWritePosPhi), nextSubStrideWritePos, b->CreateAdd(nextSubStrideWritePos, sz_TWO), "segWritePosUpdate");
 
-    Value * producedBase = b->CreateSub(segWritePosUpdate, b->CreateURem(segWritePosUpdate, sz_BLOCK_SIZE));
-    Value * producedBitOffset = b->CreateSub(segWritePosUpdate, producedBase);
-    Value * nextAlignedOffset = b->CreateSub(sz_BLOCK_SIZE, producedBitOffset);
-    Value * producedByteOffset = b->CreateSelect(b->CreateICmpEQ(producedBitOffset, sz_ZERO), producedBitOffset, nextAlignedOffset);
-    Value * const producedCurSegment = b->CreateAdd(segWritePosUpdate, producedByteOffset);
+    // Value * producedBase = b->CreateSub(segWritePosUpdate, b->CreateURem(segWritePosUpdate, sz_BLOCK_SIZE));
+    // Value * producedBitOffset = b->CreateSub(segWritePosUpdate, producedBase);
+    // Value * nextAlignedOffset = b->CreateSub(sz_BLOCK_SIZE, producedBitOffset);
+    // Value * producedByteOffset = b->CreateSelect(b->CreateICmpEQ(producedBitOffset, sz_ZERO), producedBitOffset, nextAlignedOffset);
+    // Value * const producedCurSegment = b->CreateAdd(segWritePosUpdate, producedByteOffset);
 
     segWritePosPhi->addIncoming(segWritePosUpdate, checkFinalLoopCond);
     // b->CallPrintInt("nextSubStrideWritePos", nextSubStrideWritePos);
@@ -1495,7 +1500,7 @@ InterleaveCompressionSegment::InterleaveCompressionSegment(BuilderRef b,
                                     StreamSet * dictPartialSum,
                                     StreamSet * cmpPartialSum,
                                     unsigned strideBlocks)
-: MultiBlockKernel(b, "InterleaveCompressionSegment" + std::to_string(strideBlocks) + "_" + std::to_string(dictData->getNumElements()) + "_" + std::to_string(codedBytes->getNumElements()),
+: MultiBlockKernel(b, "InterleaveCompressionSegment" + std::to_string(strideBlocks) + "_" + std::to_string(dictPartialSum->getNumElements()) + "_" + std::to_string(cmpPartialSum->getNumElements()),
                    {Binding{"dictPartialSum", dictPartialSum, FixedRate(1)},
                     Binding{"cmpPartialSum", cmpPartialSum, /*FixedRate(1024000)*/ FixedRate(1)},
                     Binding{"dictData", dictData, PartialSum("dictPartialSum")},
@@ -1716,7 +1721,7 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
     Value * ZTF_prefix = b->CreateAdd(pfxOffset1, multiplier1, "ZTF_prefix");
     b->CreateWriteCall(b->getInt32(STDERR_FILENO), symPtr1, keyLength);
     b->CallPrintInt("hashCode", b->CreateOr(codewordVal_debug, thePfx));
-    b->CallPrintInt("keyLength", keyLength);
+    // b->CallPrintInt("keyLength", keyLength);
 #endif
 #ifdef CHECK_COMPRESSION_DECOMPRESSION_STORE
     b->CallPrintInt("hashCode", keyHash);

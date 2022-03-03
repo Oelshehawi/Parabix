@@ -33,8 +33,7 @@ namespace kernel {
 void FilterByMask(const std::unique_ptr<ProgramBuilder> & P,
                   StreamSet * mask, StreamSet * inputs, StreamSet * outputs,
                   unsigned streamOffset = 0,
-                  unsigned extractionFieldWidth = 64,
-                  bool byteDeletion = false);
+                  unsigned extractionFieldWidth = 64);
 
 //
 // Parallel Prefix Deletion Kernel
