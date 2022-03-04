@@ -48,6 +48,9 @@
 #include <kernel/pipeline/pipeline_builder.h>
 #include "ztf-logic.h"
 #include "ztf-scan.h"
+#ifdef ENABLE_PAPI
+#include <util/papi_helper.hpp>
+#endif
 
 using namespace pablo;
 using namespace parse;
@@ -59,6 +62,7 @@ static cl::OptionCategory ztfHashOptions("ztfHash Options", "ZTF-Hash options.")
 static cl::opt<std::string> inputFile(cl::Positional, cl::desc("<input file>"), cl::Required, cl::cat(ztfHashOptions));
 static cl::opt<bool> Decompression("d", cl::desc("Decompress from ZTF-Runs to UTF-8."), cl::cat(ztfHashOptions), cl::init(false));
 static cl::alias DecompressionAlias("decompress", cl::desc("Alias for -d"), cl::aliasopt(Decompression));
+static cl::opt<bool> UseByteFilterByMask("byte-filter-by-mask", cl::desc("Use byte deletion FilterByMask"), cl::init(false), cl::cat(ztfHashOptions));
 
 typedef void (*ztfHashFunctionType)(uint32_t fd);
 
@@ -202,6 +206,10 @@ int main(int argc, char *argv[]) {
     if (LLVM_UNLIKELY(fd == -1)) {
         errs() << "Error: cannot open " << inputFile << " for processing. Skipped.\n";
     } else {
+        #ifdef REPORT_PAPI_TESTS
+        papi::PapiCounter<4> jitExecution{{PAPI_L3_TCM, PAPI_L3_TCA, PAPI_TOT_INS, PAPI_TOT_CYC}};
+        jitExecution.start();
+        #endif
         if (Decompression) {
             auto ztfHashDecompressionFunction = ztfHash_decompression_gen(pxDriver);
             ztfHashDecompressionFunction(fd);
@@ -209,6 +217,10 @@ int main(int argc, char *argv[]) {
             auto ztfHashCompressionFunction = ztfHash_compression_gen(pxDriver);
             ztfHashCompressionFunction(fd);
         }
+        #ifdef REPORT_PAPI_TESTS
+        jitExecution.stop();
+        jitExecution.write(std::cerr);
+        #endif
         close(fd);
     }
     return 0;

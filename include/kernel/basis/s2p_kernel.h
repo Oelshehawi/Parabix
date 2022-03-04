@@ -21,13 +21,13 @@ public:
     S2PKernel(BuilderRef b,
               StreamSet * const codeUnitStream,
               StreamSet * const BasisBits,
-              Scalar * signalNullObject = nullptr);
+              StreamSet * zeroMask = nullptr);
 protected:
+    Bindings makeInputBindings(StreamSet * codeUnitStream, StreamSet * zeroMask);
     Bindings makeOutputBindings(StreamSet * const BasisBits);
-    Bindings makeInputScalarBindings(Scalar * signalNullObject);
     void generateMultiBlockLogic(BuilderRef b, llvm::Value * const numOfStrides) override;
 private:
-    bool mAbortOnNull;
+    bool mZeroMask;
     unsigned mNumOfStreams;
 };
 
@@ -37,6 +37,20 @@ void Staged_S2P(const std::unique_ptr<ProgramBuilder> & P,
                 StreamSet * codeUnitStream, StreamSet * BasisBits,
                 bool completionFromQuads = false);
 
+
+class S2P_i21_3xi8 final : public MultiBlockKernel {
+public:
+    S2P_i21_3xi8(BuilderRef b, StreamSet * const i32Stream, StreamSet * const i8stream0, StreamSet * const i8stream1, StreamSet * const i8stream2);
+protected:
+    void generateMultiBlockLogic(BuilderRef kb, llvm::Value * const numOfStrides) override;
+};
+
+class S2P_3xi8_21xi1 final : public MultiBlockKernel {
+public:
+    S2P_3xi8_21xi1(BuilderRef b, StreamSet * const i8stream0, StreamSet * const i8stream1, StreamSet * const i8stream2, StreamSet * const BasisBits);
+protected:
+    void generateMultiBlockLogic(BuilderRef kb, llvm::Value * const numOfStrides) override;
+};
 
 class S2P_21Kernel final : public MultiBlockKernel {
 public:

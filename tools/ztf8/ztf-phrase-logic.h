@@ -28,15 +28,10 @@ protected:
 class InverseStream : public pablo::PabloKernel {
 public:
     InverseStream(BuilderRef kb,
-                StreamSet * hashMarks,
-                StreamSet * prevMarks,
-                unsigned startLgIdx,
-                unsigned groupNum,
+                StreamSet * inStream,
                 StreamSet * selected);
 protected:
     void generatePabloMethod() override;
-    unsigned mGroupNum;
-    unsigned mStartIdx;
 };
 
 /*
@@ -50,10 +45,12 @@ public:
                  EncodingInfo & encodingScheme,
                  StreamSet * groupLenBixnum,
                  StreamSet * hashMarks,
-                 StreamSet * selectedHashMarksPos);
+                 StreamSet * selectedHashMarksPos,
+                 unsigned offset);
 protected:
     void generatePabloMethod() override;
     EncodingInfo & mEncodingScheme;
+    const unsigned mOffset;
 };
 
 // 1. select non-overlapping phrases of same length

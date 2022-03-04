@@ -41,10 +41,22 @@ private:
 class AccumRunIndex : public pablo::PabloKernel {
 public:
     AccumRunIndex(BuilderRef b,
-               StreamSet * const runMarks, StreamSet * runIndex, StreamSet * overflow, StreamSet * accumRunIndex, StreamSet * accumOverflow = nullptr);
+               unsigned numSym, StreamSet * const runMarks, StreamSet * runIndex, StreamSet * overflow, StreamSet * accumRunIndex, StreamSet * accumOverflow = nullptr);
     void generatePabloMethod() override;
 private:
     unsigned mIndexCount;
+    bool mOverflow;
+    unsigned mOffset;
+};
+
+class AccumRunIndexNew : public pablo::PabloKernel {
+public:
+    AccumRunIndexNew(BuilderRef b,
+               unsigned numSym, StreamSet * const runMarks, StreamSet * runIndex, StreamSet * overflow, StreamSet * phraseRunIndex, StreamSet * phraseOverflow = nullptr);
+    void generatePabloMethod() override;
+private:
+    unsigned mIndexCount;
+    unsigned mNumSym;
     bool mOverflow;
 };
 
