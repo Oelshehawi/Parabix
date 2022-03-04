@@ -90,6 +90,10 @@ extern bool TimeKernelsIsEnabled;
 extern bool EnableHybridThreadModel;
 extern unsigned Z3_Timeout;
 
+//extern unsigned NumOfKernels;
+//extern unsigned NumOfStreamSets;
+//extern unsigned NumOfPartitions;
+
 void ParseCommandLineOptions(int argc, const char *const *argv, std::initializer_list<const llvm::cl::OptionCategory *> hiding = {});
 
 void AddParabixVersionPrinter();

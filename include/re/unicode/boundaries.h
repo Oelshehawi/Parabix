@@ -14,7 +14,7 @@ bool hasGraphemeClusterBoundary(const RE * re);
 
 bool hasWordBoundary(const RE * re);
 
-bool MatchesWordCharactersOnly(const RE * re);
+bool hasUnicodeLookahead(const RE * re);
 
 RE * resolveGraphemeMode(RE * re, bool inGraphemeMode);
 
