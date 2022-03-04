@@ -1541,13 +1541,13 @@ SymbolGroupDecompression::SymbolGroupDecompression(BuilderRef b,
                    {InternalScalar{ArrayType::get(b->getInt8Ty(), encodingScheme.byLength[groupNo].hi), "pendingOutput"},
                     // Hash table 8 length-based tables with 256 16-byte entries each.
                     InternalScalar{ArrayType::get(ArrayType::get(b->getInt8Ty(), encodingScheme.byLength[groupNo].hi), phraseHashTableSize(encodingScheme.byLength[groupNo])), "hashTable"}}),
-    mEncodingScheme(encodingScheme), mGroupNo(groupNo), mNumSym(numSym), mSubStride(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS)) {
+    mEncodingScheme(encodingScheme), mGroupNo(groupNo), mNumSym(numSym) {
     if (DelayedAttributeIsSet()) {
         mOutputStreamSets.emplace_back("result", result, BoundedRate(0,1), Delayed(encodingScheme.maxSymbolLength()));
     } else {
         mOutputStreamSets.emplace_back("result", result, BoundedRate(0,1));
     }
-    setStride(1024000);
+    setStride(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS));
 }
 
 void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * const numOfStrides) {
@@ -1555,21 +1555,15 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
     ScanWordParameters sw(b, mStride);
     LengthGroupParameters lg(b, mEncodingScheme, mGroupNo);
     Constant * sz_STRIDE = b->getSize(mStride);
-    Constant * sz_SUB_STRIDE = b->getSize(mSubStride);
     Constant * sz_BLOCKS_PER_STRIDE = b->getSize(mStride/b->getBitBlockWidth());
-    Constant * sz_BLOCKS_PER_SUB_STRIDE = b->getSize(mSubStride/b->getBitBlockWidth());
     Constant * sz_ZERO = b->getSize(0);
     Constant * sz_ONE = b->getSize(1);
     Constant * sz_TWO = b->getSize(2);
     Constant * sz_TABLEMASK = b->getSize((1U << 14) -1);
     Type * sizeTy = b->getSizeTy();
 
-    assert ((mStride % mSubStride) == 0);
-    Value * totalSubStrides =  b->getSize(mStride / mSubStride);
-
     BasicBlock * const entryBlock = b->GetInsertBlock();
     BasicBlock * const stridePrologue = b->CreateBasicBlock("stridePrologue");
-    BasicBlock * const subStrideMaskPrep = b->CreateBasicBlock("subStrideMaskPrep");
     BasicBlock * const strideMasksReady = b->CreateBasicBlock("strideMasksReady");
     BasicBlock * const keyProcessingLoop = b->CreateBasicBlock("keyProcessingLoop");
     BasicBlock * const storeKey = b->CreateBasicBlock("storeKey");
@@ -1579,13 +1573,7 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
     BasicBlock * const lookupSym = b->CreateBasicBlock("lookupSym");
     BasicBlock * const nextHash = b->CreateBasicBlock("nextHash");
     BasicBlock * const hashesDone = b->CreateBasicBlock("hashesDone");
-    BasicBlock * const subStridePhrasesDone = b->CreateBasicBlock("subStridePhrasesDone");
     BasicBlock * const stridesDone = b->CreateBasicBlock("stridesDone");
-
-    BasicBlock * const printProduced = b->CreateBasicBlock("printProduced");
-    // BasicBlock * const dontPrintInitProduced = b->CreateBasicBlock("dontPrintInitProduced");
-    // BasicBlock * const printInitProduced = b->CreateBasicBlock("printInitProduced");
-    BasicBlock * const dontPrintProduced = b->CreateBasicBlock("dontPrintProduced");
 
     Value * const initialPos = b->getProcessedItemCount("keyMarks0");
     Value * const avail = b->getAvailableItemCount("keyMarks0");
@@ -1608,29 +1596,19 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
     // Set up the loop variables as PHI nodes at the beginning of each stride.
     PHINode * const strideNo = b->CreatePHI(sizeTy, 2);
     strideNo->addIncoming(sz_ZERO, entryBlock);
-    // b->CallPrintInt("strideNo", strideNo);
     Value * nextStrideNo = b->CreateAdd(strideNo, sz_ONE);
     Value * stridePos = b->CreateAdd(initialPos, b->CreateMul(strideNo, sz_STRIDE));
     Value * strideBlockOffset = b->CreateMul(strideNo, sz_BLOCKS_PER_STRIDE);
-    b->CreateBr(subStrideMaskPrep);
-
-    b->SetInsertPoint(subStrideMaskPrep);
-    PHINode * const subStrideNo = b->CreatePHI(sizeTy, 2);
-    subStrideNo->addIncoming(sz_ZERO, stridePrologue);
-    Value * nextSubStrideNo = b->CreateAdd(subStrideNo, sz_ONE);
-    Value * subStridePos = b->CreateAdd(stridePos, b->CreateMul(subStrideNo, sz_SUB_STRIDE));
-    Value * subStrideBlockOffset = b->CreateAdd(strideBlockOffset,
-                                             b->CreateMul(subStrideNo, sz_BLOCKS_PER_SUB_STRIDE));
 
     std::vector<Value *> keyMasks(1);
     std::vector<Value *> hashMasks(1);
-    initializeDecompressionMasks(b, sw, sz_BLOCKS_PER_SUB_STRIDE, 1, subStrideBlockOffset, keyMasks, hashMasks, strideMasksReady);
+    initializeDecompressionMasks(b, sw, sz_BLOCKS_PER_STRIDE, 1, strideBlockOffset, keyMasks, hashMasks, strideMasksReady);
     Value * keyMask = keyMasks[0];
     Value * hashMask = hashMasks[0];
 
     b->SetInsertPoint(strideMasksReady);
 
-    Value * keyWordBasePtr = b->getInputStreamBlockPtr("keyMarks0", sz_ZERO, subStrideBlockOffset);
+    Value * keyWordBasePtr = b->getInputStreamBlockPtr("keyMarks0", sz_ZERO, strideBlockOffset);
     keyWordBasePtr = b->CreateBitCast(keyWordBasePtr, sw.pointerTy);
     DEBUG_PRINT("keyMask", keyMask);
     b->CreateUnlikelyCondBr(b->CreateICmpEQ(keyMask, sz_ZERO), keysDone, keyProcessingLoop);
@@ -1643,7 +1621,7 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
     Value * keyWordIdx = b->CreateCountForwardZeroes(keyMaskPhi, "keyWordIdx");
     Value * nextKeyWord = b->CreateZExtOrTrunc(b->CreateLoad(b->CreateGEP(keyWordBasePtr, keyWordIdx)), sizeTy);
     Value * theKeyWord = b->CreateSelect(b->CreateICmpEQ(keyWordPhi, sz_ZERO), nextKeyWord, keyWordPhi);
-    Value * keyWordPos = b->CreateAdd(subStridePos, b->CreateMul(keyWordIdx, sw.WIDTH));
+    Value * keyWordPos = b->CreateAdd(stridePos, b->CreateMul(keyWordIdx, sw.WIDTH));
     Value * keyMarkPosInWord = b->CreateCountForwardZeroes(theKeyWord);
     Value * keyMarkPos = b->CreateAdd(keyWordPos, keyMarkPosInWord, "keyEndPos");
     DEBUG_PRINT("keyMarkPos", keyMarkPos);
@@ -1748,9 +1726,9 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
 
     b->SetInsertPoint(keysDone);
     // replace codewords by decompressed phrases
-    Value * hashWordBasePtr = b->getInputStreamBlockPtr("hashMarks0", sz_ZERO, subStrideBlockOffset);
+    Value * hashWordBasePtr = b->getInputStreamBlockPtr("hashMarks0", sz_ZERO, strideBlockOffset);
     hashWordBasePtr = b->CreateBitCast(hashWordBasePtr, sw.pointerTy);
-    b->CreateUnlikelyCondBr(b->CreateICmpEQ(hashMask, sz_ZERO), subStridePhrasesDone, hashProcessingLoop);
+    b->CreateUnlikelyCondBr(b->CreateICmpEQ(hashMask, sz_ZERO), hashesDone, hashProcessingLoop);
 
     b->SetInsertPoint(hashProcessingLoop);
     PHINode * const hashMaskPhi = b->CreatePHI(sizeTy, 2);
@@ -1760,7 +1738,7 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
     Value * hashWordIdx = b->CreateCountForwardZeroes(hashMaskPhi, "hashWordIdx");
     Value * nextHashWord = b->CreateZExtOrTrunc(b->CreateLoad(b->CreateGEP(hashWordBasePtr, hashWordIdx)), sizeTy);
     Value * theHashWord = b->CreateSelect(b->CreateICmpEQ(hashWordPhi, sz_ZERO), nextHashWord, hashWordPhi);
-    Value * hashWordPos = b->CreateAdd(subStridePos, b->CreateMul(hashWordIdx, sw.WIDTH));
+    Value * hashWordPos = b->CreateAdd(stridePos, b->CreateMul(hashWordIdx, sw.WIDTH));
     Value * hashPosInWord = b->CreateCountForwardZeroes(theHashWord);
     Value * hashMarkPos = b->CreateAdd(hashWordPos, hashPosInWord, "hashMarkPos");
     DEBUG_PRINT("hashMarkPos", hashMarkPos);
@@ -1843,11 +1821,7 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
     BasicBlock * hashBB = b->GetInsertBlock();
     hashMaskPhi->addIncoming(nextHashMask, hashBB);
     hashWordPhi->addIncoming(dropHash, hashBB);
-    b->CreateCondBr(b->CreateICmpNE(nextHashMask, sz_ZERO), hashProcessingLoop, subStridePhrasesDone);
-
-    b->SetInsertPoint(subStridePhrasesDone);
-    subStrideNo->addIncoming(nextSubStrideNo, subStridePhrasesDone);
-    b->CreateCondBr(b->CreateICmpNE(nextSubStrideNo, totalSubStrides), subStrideMaskPrep, hashesDone);
+    b->CreateCondBr(b->CreateICmpNE(nextHashMask, sz_ZERO), hashProcessingLoop, hashesDone);
 
     b->SetInsertPoint(hashesDone);
     strideNo->addIncoming(nextStrideNo, hashesDone);
@@ -1862,15 +1836,4 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
     Value * guaranteedProduced = b->CreateSub(avail, lg.HI);
     b->CreateMemCpy(b->getScalarFieldPtr("pendingOutput"), b->getRawOutputPointer("result", guaranteedProduced), lg.HI, 1);
     b->setProducedItemCount("result", b->CreateSelect(b->isFinal(), avail, guaranteedProduced));
-    b->CreateCondBr(b->CreateAnd(b->CreateICmpEQ(b->getSize(mNumSym), sz_ZERO), b->CreateICmpEQ(b->getSize(mGroupNo), b->getSize(0))), printProduced, dontPrintProduced);
-    b->SetInsertPoint(printProduced);
-    // b->CallPrintInt("avail", avail);
-    // b->CallPrintInt("initialProduced", initialProduced);
-    // b->CallPrintInt("guaranteedProduced", guaranteedProduced);
-    b->CreateBr(dontPrintProduced);
-    b->SetInsertPoint(dontPrintProduced);
-    //CHECK: Although we have written the full input stream to output, there may
-    // be an incomplete symbol at the end of this block.   Store the
-    // data that may be overwritten as pending and set the produced item
-    // count to that which is guaranteed to be correct.
 }
