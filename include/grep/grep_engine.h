@@ -130,6 +130,7 @@ protected:
 
     // Transpose to basis bit streams, if required otherwise return the source byte stream.
     kernel::StreamSet * getBasis(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * ByteStream);
+    kernel::StreamSet * getFullyDecompressedBytes(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * ByteStream);
 
     // Initial grep set-up.
     // Implement any required checking/processing of null characters, determine the
@@ -140,6 +141,8 @@ protected:
     void addExternalStreams(const std::unique_ptr<kernel::ProgramBuilder> & P, std::unique_ptr<kernel::GrepKernelOptions> & options, re::RE * regexp, kernel::StreamSet * indexMask = nullptr);
     void U8indexedGrep(const std::unique_ptr<kernel::ProgramBuilder> &P, re::RE * re, kernel::StreamSet * Source, kernel::StreamSet * Results);
     void UnicodeIndexedGrep(const std::unique_ptr<kernel::ProgramBuilder> &P, re::RE * re, kernel::StreamSet * Source, kernel::StreamSet * Results);
+    void ZTFPreliminaryGrep(const std::unique_ptr<kernel::ProgramBuilder> &P, re::RE * re, kernel::StreamSet * Source, kernel::StreamSet * Results);
+    void ZTFDecmpLogic(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * Source, kernel::StreamSet * Results, kernel::StreamSet * Uncompressed_basis);
     kernel::StreamSet * grepPipeline(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * ByteStream);
     virtual uint64_t doGrep(const std::vector<std::string> & fileNames, std::ostringstream & strm);
     int32_t openFile(const std::string & fileName, std::ostringstream & msgstrm);
@@ -190,6 +193,8 @@ protected:
     kernel::StreamSet * mU8index;
     kernel::StreamSet * mGCB_stream;
     kernel::StreamSet * mWordBoundary_stream;
+    kernel::StreamSet * mZTFHashtableMarks;
+    kernel::StreamSet * mZTFDecodedMarks;
     re::UTF8_Transformer mUTF8_Transformer;
     pthread_t mEngineThread;
 };

@@ -150,6 +150,8 @@ GrepEngine::GrepEngine(BaseDriver &driver) :
     mU8index(nullptr),
     mGCB_stream(nullptr),
     mWordBoundary_stream(nullptr),
+    mZTFHashtableMarks(nullptr),
+    mZTFDecodedMarks(nullptr),
     mUTF8_Transformer(re::NameTransformationMode::None),
     mEngineThread(pthread_self()) {}
 
@@ -302,14 +304,9 @@ void GrepEngine::initRE(re::RE * re) {
             UnicodeIndexing = true;
         }
     }
-
-    for (unsigned i = 0; i < mREs.size(); ++i) {
-        if (MatchesWordCharactersOnly(mREs[i])) {
-            //llvm::errs() << "MatchesWordCharactersOnly" << "\n";
-            setComponent(mExternalComponents, Component::ZTF8index);
-            ZTF8Indexing = true;
-            break;
-        }
+    if (hasWordCharactersOnly(mRE)) {
+        setComponent(mExternalComponents, Component::ZTF8index);
+        ZTF8Indexing = true;
     }
 
     if (UnicodeIndexing) {
@@ -357,52 +354,57 @@ void GrepEngine::initRE(re::RE * re) {
         setComponent(mExternalComponents, Component::UTF8index);
     }
 }
+StreamSet * GrepEngine::getFullyDecompressedBytes(const std::unique_ptr<ProgramBuilder> & P, StreamSet * coded_bytes) {
+    StreamSet * const ztfHashBasis = P->CreateStreamSet(8);
+    P->CreateKernelCall<S2PKernel>(coded_bytes, ztfHashBasis);
+    StreamSet * const ztfInsertionLengths = P->CreateStreamSet(5);
+    StreamSet * countStream = P->CreateStreamSet(1);
+    P->CreateKernelCall<ZTF_PhraseExpansionDecoder>(encodingScheme1, ztfHashBasis, ztfInsertionLengths, countStream);
+    StreamSet * const ztfRunSpreadMask = InsertionSpreadMask(P, ztfInsertionLengths);
+    StreamSet * const ztfHash_u8_Basis = P->CreateStreamSet(8);
+    SpreadByMask(P, ztfRunSpreadMask, ztfHashBasis, ztfHash_u8_Basis);
+
+    StreamSet * decodedMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size());
+    StreamSet * hashtableMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size());
+    StreamSet * const hashtableSpan = P->CreateStreamSet(1);
+    P->CreateKernelCall<ZTF_PhraseDecodeLengths>(encodingScheme1, 2/*SymCount*/, ztfHash_u8_Basis, decodedMarks, hashtableMarks, hashtableSpan);
+
+    StreamSet * const ztfHash_u8bytes = P->CreateStreamSet(1, 8);
+    P->CreateKernelCall<P2SKernel>(ztfHash_u8_Basis, ztfHash_u8bytes);
+
+    StreamSet * u8bytes = ztfHash_u8bytes;
+    for(unsigned sym = 0; sym < 2/*SymCount*/; sym++) {
+        unsigned startIdx = 0;
+        if (sym > 0) {
+            startIdx = 3;
+        }
+        for (unsigned i = startIdx; i < encodingScheme1.byLength.size(); i++) {
+            StreamSet * const hashGroupMarks = P->CreateStreamSet(1);
+            P->CreateKernelCall<StreamSelect>(hashGroupMarks, Select(hashtableMarks, {(sym * encodingScheme1.byLength.size()) + i}));
+            StreamSet * const groupDecoded = P->CreateStreamSet(1);
+            P->CreateKernelCall<StreamSelect>(groupDecoded, Select(decodedMarks, {(sym * encodingScheme1.byLength.size()) + i}));
+
+            StreamSet * const input_bytes = u8bytes;
+            StreamSet * const output_bytes = P->CreateStreamSet(1, 8);
+            P->CreateKernelCall<SymbolGroupDecompression>(encodingScheme1, sym, i, hashGroupMarks, groupDecoded, input_bytes, output_bytes);
+            u8bytes = output_bytes;
+        }
+    }
+    StreamSet * const decoded = P->CreateStreamSet(8);
+    P->CreateKernelCall<S2PKernel>(u8bytes, decoded);
+    StreamSet * const decoded_basis = P->CreateStreamSet(8);
+    FilterByMask(P, hashtableSpan, decoded, decoded_basis);
+    StreamSet * const decoded_bytes = P->CreateStreamSet(1, 8);
+    P->CreateKernelCall<P2SKernel>(decoded_basis, decoded_bytes);
+    return decoded_bytes;
+}
 
 StreamSet * GrepEngine::getBasis(const std::unique_ptr<ProgramBuilder> & P, StreamSet * ByteStream) {
-    if(mBinaryFilesMode == argv::ZTFCompressed) {
-        StreamSet * const ztfHashBasis = P->CreateStreamSet(8);
-        P->CreateKernelCall<S2PKernel>(ByteStream, ztfHashBasis);
-        StreamSet * const ztfInsertionLengths = P->CreateStreamSet(5);
-        StreamSet * countStream = P->CreateStreamSet(1);
-        P->CreateKernelCall<ZTF_PhraseExpansionDecoder>(encodingScheme1, ztfHashBasis, ztfInsertionLengths, countStream);
-        StreamSet * const ztfRunSpreadMask = InsertionSpreadMask(P, ztfInsertionLengths);
-        StreamSet * const ztfHash_u8_Basis = P->CreateStreamSet(8);
-        SpreadByMask(P, ztfRunSpreadMask, ztfHashBasis, ztfHash_u8_Basis);
-
-        StreamSet * decodedMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size());
-        StreamSet * hashtableMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size());
-        StreamSet * const hashtableSpan = P->CreateStreamSet(1);
-        P->CreateKernelCall<ZTF_PhraseDecodeLengths>(encodingScheme1, 2/*SymCount*/, ztfHash_u8_Basis, decodedMarks, hashtableMarks, hashtableSpan);
-
-        StreamSet * const ztfHash_u8bytes = P->CreateStreamSet(1, 8);
-        P->CreateKernelCall<P2SKernel>(ztfHash_u8_Basis, ztfHash_u8bytes);
-
-        StreamSet * u8bytes = ztfHash_u8bytes;
-        for(unsigned sym = 0; sym < 2/*SymCount*/; sym++) {
-            unsigned startIdx = 0;
-            if (sym > 0) {
-                startIdx = 3;
-            }
-            for (unsigned i = startIdx; i < encodingScheme1.byLength.size(); i++) {
-                StreamSet * const hashGroupMarks = P->CreateStreamSet(1);
-                P->CreateKernelCall<StreamSelect>(hashGroupMarks, Select(hashtableMarks, {(sym * encodingScheme1.byLength.size()) + i}));
-                StreamSet * const groupDecoded = P->CreateStreamSet(1);
-                P->CreateKernelCall<StreamSelect>(groupDecoded, Select(decodedMarks, {(sym * encodingScheme1.byLength.size()) + i}));
-
-                StreamSet * const input_bytes = u8bytes;
-                StreamSet * const output_bytes = P->CreateStreamSet(1, 8);
-                P->CreateKernelCall<SymbolGroupDecompression>(encodingScheme1, sym, i, hashGroupMarks, groupDecoded, input_bytes, output_bytes);
-                u8bytes = output_bytes;
-            }
-        }
-        StreamSet * const decoded = P->CreateStreamSet(8);
-        P->CreateKernelCall<S2PKernel>(u8bytes, decoded);
-        StreamSet * const decoded_basis = P->CreateStreamSet(8);
-        FilterByMask(P, hashtableSpan, decoded, decoded_basis);
-
-        StreamSet * const decoded_bytes = P->CreateStreamSet(1, 8);
-        P->CreateKernelCall<P2SKernel>(decoded_basis, decoded_bytes);
-        ByteStream = decoded_bytes;
+    if(mBinaryFilesMode == argv::ZTFCompressed && argv::FullyDecompressFlag) {
+        //get fully decompressed byte stream
+        StreamSet * coded_bytes = ByteStream;
+        ByteStream = getFullyDecompressedBytes(P, coded_bytes);
+        // ByteStream = decoded_bytes;
         mBinaryFilesMode = argv::Text;
     }
     if (hasComponent(mExternalComponents, Component::S2P)) {
@@ -425,6 +427,8 @@ void GrepEngine::grepPrologue(const std::unique_ptr<ProgramBuilder> & P, StreamS
     mU8index = nullptr;
     mGCB_stream = nullptr;
     mWordBoundary_stream = nullptr;
+    mZTFHashtableMarks = nullptr;
+    mZTFDecodedMarks = nullptr;
     mPropertyStreamMap.clear();
 
     Scalar * const callbackObject = P->getInputScalar("callbackObject");
@@ -614,6 +618,78 @@ void GrepEngine::U8indexedGrep(const std::unique_ptr<ProgramBuilder> & P, re::RE
     }
 }
 
+void GrepEngine::ZTFPreliminaryGrep(const std::unique_ptr<ProgramBuilder> & P, re::RE * re, StreamSet * Source, StreamSet * Results) {
+    // add the Unicode grep and U8indexedGrep logic as per the RE properties
+    std::unique_ptr<kernel::GrepKernelOptions> options;
+    std::pair<int, int> lengths;
+    if (UnicodeIndexing) {
+        options = std::make_unique<GrepKernelOptions>(&cc::Unicode);
+        lengths = getLengthRange(re, &cc::Unicode);
+        // More options to be added
+    }
+    else {
+        options = std::make_unique<GrepKernelOptions>(&cc::UTF8);
+        lengths = getLengthRange(re, &cc::UTF8);
+        if (hasComponent(mExternalComponents, Component::UTF8index)) {
+            options->setIndexingTransformer(&mUTF8_Transformer, mU8index);
+            if (mSuffixRE != nullptr) {
+                options->setPrefixRE(mPrefixRE);
+                options->setRE(mSuffixRE);
+            } else {
+                options->setRE(re);
+            }
+        } else {
+            if (mSuffixRE != nullptr) {
+                options->setPrefixRE(toUTF8(mPrefixRE));
+                options->setRE(toUTF8(mSuffixRE));
+            } else {
+                options->setRE(toUTF8(re));
+            }
+        }
+    }
+    options->setSource(Source);
+    options->setResults(Results);
+    addExternalStreams(P, options, re);
+    P->CreateKernelCall<ICGrepKernel>(std::move(options));
+}
+
+void GrepEngine::ZTFDecmpLogic(const std::unique_ptr<ProgramBuilder> & P, StreamSet * Source, StreamSet * Results, StreamSet * Uncompressed_basis) {
+    mZTFHashtableMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size());
+    mZTFDecodedMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size());
+    StreamSet * ztfHash_u8bytes = P->CreateStreamSet(1, 8); // nullptr ?
+    if (hasComponent(mExternalComponents, Component::ZTF8index)) {
+        ztfHash_u8bytes = ZTFLinesLogic(P, encodingScheme1, Source, Results, mZTFHashtableMarks, mZTFDecodedMarks);
+    }
+
+    const auto n = encodingScheme1.byLength.size();
+    StreamSet * u8bytes = ztfHash_u8bytes;
+    for(unsigned sym = 0; sym < 2/*SymCount*/; sym++) {
+        unsigned startIdx = 0;
+        if (sym > 0) {
+            startIdx = 3;
+        }
+        for (unsigned i = startIdx; i < n; i++) {
+            const unsigned idx = (sym * encodingScheme1.byLength.size()) + i;
+            StreamSet * const hashGroupMarks = P->CreateStreamSet(1);
+            StreamSet * const groupDecoded = P->CreateStreamSet(1);
+            P->CreateKernelCall<StreamSelect>(hashGroupMarks, Select(mZTFHashtableMarks, {idx}));
+            P->CreateKernelCall<StreamSelect>(groupDecoded, Select(mZTFDecodedMarks, {idx}));
+
+            StreamSet * const input_bytes = u8bytes;
+            StreamSet * const output_bytes = P->CreateStreamSet(1, 8);
+            // hashGroupMarks -> hashtable codeword group marks
+            // groupDecoded -> to decompress codeword marks
+            P->CreateKernelCall<SymbolGroupDecompression>(encodingScheme1, sym, i, hashGroupMarks, groupDecoded, input_bytes, output_bytes);
+            u8bytes = output_bytes;
+        }
+    }
+    // StreamSet * const decoded = P->CreateStreamSet(8);
+    P->CreateKernelCall<S2PKernel>(u8bytes, Uncompressed_basis);
+    // // Remove the dictionary segments from uncompressed data
+    // StreamSet * const decoded_basis = P->CreateStreamSet(8);
+    // FilterByMask(P, hashtableSpan, decoded, decoded_basis);
+}
+
 StreamSet * GrepEngine::grepPipeline(const std::unique_ptr<ProgramBuilder> & P, StreamSet * InputStream) {
     StreamSet * SourceStream = getBasis(P, InputStream);
 
@@ -622,11 +698,21 @@ StreamSet * GrepEngine::grepPipeline(const std::unique_ptr<ProgramBuilder> & P, 
     prepareExternalStreams(P, SourceStream);
 
     StreamSet * Matches = P->CreateStreamSet(1, 1);
+    // run preliminary matching on the compressed streams
+    // if any match exists, mark the corresponding dictionary; only decompress selective compressed segments.
+    if (mBinaryFilesMode == argv::ZTFCompressed  && hasComponent(mExternalComponents, Component::ZTF8index)) {
+        ZTFPreliminaryGrep(P, mRE, SourceStream, Matches);
+        // check for matches in the uncompressed data
+        StreamSet * Uncompressed_basis = P->CreateStreamSet(ENCODING_BITS, 1);
+        ZTFDecmpLogic(P, SourceStream, Matches, Uncompressed_basis);
+    }
+    else {
         if (UnicodeIndexing) {
             UnicodeIndexedGrep(P, mRE, SourceStream, Matches);
         } else {
             U8indexedGrep(P, mRE, SourceStream, Matches);
         }
+    }
     if (hasComponent(mExternalComponents, Component::MoveMatchesToEOL)) {
         StreamSet * const MovedMatches = P->CreateStreamSet();
         P->CreateKernelCall<MatchedLinesKernel>(Matches, mLineBreakStream, MovedMatches);
@@ -804,10 +890,15 @@ void EmitMatchesEngine::grepPipeline(const std::unique_ptr<ProgramBuilder> & E, 
     prepareExternalStreams(E, SourceStream);
 
     StreamSet * Matches = E->CreateStreamSet(1, 1);
-    if (UnicodeIndexing) {
-        UnicodeIndexedGrep(E, mRE, SourceStream, Matches);
-    } else {
-        U8indexedGrep(E, mRE, SourceStream, Matches);
+    if (hasComponent(mExternalComponents, Component::ZTF8index)) {
+        ZTFPreliminaryGrep(E, mRE, SourceStream, Matches);
+    }
+    else {
+        if (UnicodeIndexing) {
+            UnicodeIndexedGrep(E, mRE, SourceStream, Matches);
+        } else {
+            U8indexedGrep(E, mRE, SourceStream, Matches);
+        }
     }
     StreamSet * MatchedLineEnds = Matches;
     if (hasComponent(mExternalComponents, Component::MoveMatchesToEOL)) {

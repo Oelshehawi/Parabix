@@ -8,6 +8,9 @@
 
 #include <pablo/pablo_kernel.h>
 #include <kernel/core/kernel_builder.h>
+#include <kernel/pipeline/pipeline_builder.h>
+#include <kernel/streamutils/pdep_kernel.h>
+#include <kernel/basis/p2s_kernel.h>
 #include "ztf-logic.h"
 
 namespace kernel {
@@ -119,10 +122,13 @@ public:
                          EncodingInfo & encodingScheme,
                          StreamSet * const basis,
                          StreamSet * insertBixNum,
-                         StreamSet * countStream);
+                         StreamSet * countStream,
+                         StreamSet * matches = nullptr,
+                         bool fullyDecompress = true);
 protected:
     void generatePabloMethod() override;
     EncodingInfo & mEncodingScheme;
+    bool mFullyDecompress;
 };
 
 class codeword_index : public pablo::PabloKernel {
@@ -131,6 +137,13 @@ public:
 protected:
     void generatePabloMethod() override;
 };
+
+kernel::StreamSet * ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> & P,
+                   EncodingInfo & encodingScheme,
+                   StreamSet * Basis,
+                   StreamSet * Results,
+                   StreamSet * hashtableMarks,
+                   StreamSet * decodedMarks);
 
 }
 #endif

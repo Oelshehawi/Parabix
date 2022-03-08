@@ -140,7 +140,6 @@ void PipelineCompiler::determineNumOfLinearStrides(BuilderRef b) {
     Value * numOfLinearStrides = nullptr;
     const auto isSourceKernel = in_degree(mKernelId, mBufferGraph) == 0;
 
-    Value * numOfLinearStrides = nullptr;
     if (mMayLoopToEntry) {
         if (mExecuteStridesIndividually) {
             Value * const anyMore = b->CreateICmpNE(mMaximumNumOfStrides, mCurrentNumOfStridesAtLoopEntryPhi);
@@ -177,14 +176,6 @@ void PipelineCompiler::determineNumOfLinearStrides(BuilderRef b) {
         }
     }
 
-<<<<<<< HEAD
-=======
-//    if (numOfOutputLinearStrides != numOfLinearStrides) {
-//        Value * const mustExpand = b->CreateIsNull(numOfOutputLinearStrides);
-//        numOfLinearStrides = b->CreateSelect(mustExpand, numOfLinearStrides, numOfOutputLinearStrides);
-//    }
-
->>>>>>> origin/grep-restructure
     numOfLinearStrides = calculateTransferableItemCounts(b, numOfOutputLinearStrides); // numOfLinearStrides
 
     mNumOfLinearStrides = numOfLinearStrides;

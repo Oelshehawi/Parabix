@@ -101,7 +101,10 @@ static cl::opt<BinaryFilesMode, true> BinaryFilesOption("binary-files", cl::desc
                                                                 clEnumValN(Text, "text", "Treat binary files as text."),
                                                                 clEnumValN(ZTFCompressed, "ZTFCompressed", "File compressed with ZTF-phrase-compression.")
                                                                 CL_ENUM_VAL_SENTINEL), cl::cat(Input_Options), cl::location(BinaryFilesFlag), cl::init(WithoutMatch));
-    
+
+bool FullyDecompressFlag;
+static cl::opt<bool, true> ZTFGrepOption("ZTF-full-decompress", cl::location(FullyDecompressFlag), cl::desc("Fully decompress ZTF-compressed file before checking for matched"), cl::cat(Input_Options), cl::init(false));
+
 
     
 /*

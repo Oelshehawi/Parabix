@@ -50,7 +50,7 @@ bool hasGraphemeClusterBoundary(const RE * re) {
     return !(v.validateRE(re));
 }
 
-    
+
 struct WordBoundaryAbsentValidator final : public RE_Validator {
     
     WordBoundaryAbsentValidator()
@@ -66,83 +66,34 @@ bool hasWordBoundary(const RE * re) {
     return !(v.validateRE(re));
 }
 
-struct WordCharacterValidator final : public RE_Validator {
+class WordCharacterValidator final : public RE_Validator {
+public:
+    WordCharacterValidator(): RE_Validator("WordCharacterValidator"),
+    mPropObj(UCD::get_WORD_PropertyObject()),
+    mWordOnlySet(mPropObj->GetCodepointSet("Yes"))
+    { }
 
-    WordCharacterValidator()
-    : RE_Validator() {}
-
-    //UCD::UnicodeSet wordsOnlySet (*re::matchableCodepoints(notWordChar);
-    //a.print();
-    UCD::UnicodeSet wordsOnlySet;
-    void createWordsOnlySet(RE * re);
-    
     bool validateCC(const CC * cc) override {
         // if CC is not in range of valid word characters return false
         bool allWordChars = true;
         for (const auto range : *cc) {
             const auto lo = re::lo_codepoint(range);
             const auto hi = re::hi_codepoint(range);
-            if (!wordsOnlySet.contains(hi) || !wordsOnlySet.contains(lo)) {
+            if (!mWordOnlySet.contains(hi) || !mWordOnlySet.contains(lo)) {
                 allWordChars = false;
             }
         }
         return allWordChars;
     }
+private:
+    UCD::PropertyObject * mPropObj;
+    UCD::UnicodeSet mWordOnlySet;
+
 };
 
-void WordCharacterValidator::createWordsOnlySet(RE * re) {
-    if (const CC * cc = dyn_cast<CC>(re)) {
-        for (const auto range : *cc) {
-            const auto lo = re::lo_codepoint(range);
-            const auto hi = re::hi_codepoint(range);
-            if (lo == hi) {
-                if (!wordsOnlySet.contains(lo)) {
-                    wordsOnlySet.insert(lo);
-                }
-            } else {
-                if (lo > 0) {
-                    if (!wordsOnlySet.contains(lo)) {
-                        wordsOnlySet.insert(lo);
-                    }
-                }
-                if (hi < 0xFF) {
-                    if (!wordsOnlySet.contains(hi+1)) {
-                        wordsOnlySet.insert(hi+1);
-                    }
-                }
-            }
-        }
-    } else if (const Name * n = dyn_cast<Name>(re)) {
-        createWordsOnlySet(n->getDefinition());
-    } else if (const Alt * alt = dyn_cast<Alt>(re)) {
-        for (RE * item : *alt) {
-            createWordsOnlySet(item);
-        }
-    } else if (const Seq * seq = dyn_cast<Seq>(re)) {
-        for (RE * item : *seq) {
-            createWordsOnlySet(item);
-        }
-    } else if (const Assertion * a = dyn_cast<Assertion>(re)) {
-        createWordsOnlySet(a->getAsserted());
-    } else if (const Rep * rep = dyn_cast<Rep>(re)) {
-        createWordsOnlySet(rep->getRE());
-    } else if (const Diff * diff = dyn_cast<Diff>(re)) {
-        createWordsOnlySet(diff->getLH());
-        createWordsOnlySet(diff->getRH());
-    } else if (const Intersect * e = dyn_cast<Intersect>(re)) {
-        createWordsOnlySet(e->getLH());
-        createWordsOnlySet(e->getRH());
-    } else if (const Group * g = dyn_cast<Group>(re)) {
-        createWordsOnlySet(g->getRE());
-    }
-
-}
-
-bool MatchesWordCharactersOnly(const RE * re) {
-    RE * notWordChar = makeDiff(makeAny(), makePropertyExpression("word"));//makeAlt(makePropertyExpression("word"), makeCC(0xA)));
+bool hasWordCharactersOnly(const RE * re) {
     WordCharacterValidator v;
-    v.createWordsOnlySet(notWordChar);
-    return !(v.validateRE(re));
+    return v.validateRE(re);
 }
 
 class NonUnicodeValidator : public RE_Validator {

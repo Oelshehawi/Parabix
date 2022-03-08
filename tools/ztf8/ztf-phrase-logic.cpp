@@ -371,17 +371,24 @@ ZTF_PhraseExpansionDecoder::ZTF_PhraseExpansionDecoder(BuilderRef b,
                                            EncodingInfo & encodingScheme,
                                            StreamSet * const basis,
                                            StreamSet * insertBixNum,
-                                           StreamSet * countStream)
+                                           StreamSet * countStream,
+                                           StreamSet * matches,
+                                           bool fullyDecompress)
 : pablo::PabloKernel(b, "ZTF_PhraseExpansionDecoder" + encodingScheme.uniqueSuffix(),
-                     {Binding{"basis", basis, FixedRate(), LookAhead(encodingScheme.maxEncodingBytes() - 1)}},
+                     {Binding{"basis", basis, FixedRate(), LookAhead(encodingScheme.maxEncodingBytes() - 1)},
+                      Binding{"matches", matches}},
                      {Binding{"insertBixNum", insertBixNum},
                       Binding{"countStream", countStream}}),
-    mEncodingScheme(encodingScheme)  {}
+    mEncodingScheme(encodingScheme), mFullyDecompress(fullyDecompress)  {}
 
 void ZTF_PhraseExpansionDecoder::generatePabloMethod() {
     PabloBuilder pb(getEntryScope());
     BixNumCompiler bnc(pb);
     //std::vector<PabloAST *> count;
+    PabloAST * matches = pb.createOnes();
+    if (!mFullyDecompress) {
+        matches = getInputStreamSet("matches")[0];
+    }
     std::vector<PabloAST *> basis = getInputStreamSet("basis");
     std::vector<PabloAST *> ASCII_lookaheads;
     std::vector<PabloAST *> sfx_80_BF_lookaheads;
@@ -400,9 +407,22 @@ void ZTF_PhraseExpansionDecoder::generatePabloMethod() {
     PabloAST * hashTableBoundaryEndFinal = pb.createAnd(hashTableBoundaryEnd, pb.createAdvance(hashTableBoundaryEnd, 1));
 
     PabloAST * fileStart = pb.createNot(pb.createAdvance(pb.createOnes(), 1));
-    PabloAST * hashTableRange = pb.createIntrinsicCall(pablo::Intrinsic::SpanUpTo, {hashTableBoundaryStartFinal, hashTableBoundaryEndFinal});
+    // WIP notes:
+    // dontDecompressRange should also mark the compressed-data segments where no matches exist
+    // 11111111................111111111........................1111111111............. <HT><CMP><HT1><CMP1><HT2><CMP2>
+    // .......11111111111111111........1111111111111111111111111.........11111111111111 <SpanUpTo(start, end)> => ~HT-span
+    // .....1.....1..........1................................................1........ <matches>
+    // .....1111111111111111111111111111111111111111111111111111111111111111111........ <SpanUpTo(matches, matches)>
+    // SpanUpTo(start, matches)
+    // SpanUpTo(matches, end)
+    // SpanUpTo(end, matches)
+    // 1......1................1.......1........................1........1............. <HT-boundaries>
+    // 11111111................1111111111111111111111111111111111111111111............. <dontDecompressRange> => required
+    // * only expand the match marks, not the complete segments with match marks? -> full lines may not be decompressed! => NO
+    //
+    PabloAST * dontDecompressRange = pb.createIntrinsicCall(pablo::Intrinsic::SpanUpTo, {hashTableBoundaryStartFinal, hashTableBoundaryEndFinal});
     PabloAST * toEliminate = pb.createAnd(pb.createLookahead(basis[7], 1), pb.createOr(hashTableBoundaryStart, hashTableBoundaryEnd));
-    hashTableRange = pb.createOr3(hashTableRange, hashTableBoundaryEndFinal, toEliminate);
+    dontDecompressRange = pb.createOr3(dontDecompressRange, hashTableBoundaryEndFinal, toEliminate);
 
     for (unsigned i = 2; i < mEncodingScheme.maxEncodingBytes(); i++) {
         PabloAST * ASCII_lookahead_multibyte = pb.createAnd(ASCII_lookahead, pb.createNot(pb.createLookahead(basis[7], pb.getInteger(i))));
@@ -492,11 +512,38 @@ void ZTF_PhraseExpansionDecoder::generatePabloMethod() {
     for (unsigned i = 0; i < 5; i++) {
         //pb.createDebugPrint(insertLgth[i], "insertLgth["+std::to_string(i)+"]");
         //if(i == 0) {
-        //    pb.createAssign(pb.createExtract(getOutputStreamVar("countStream"), pb.getInteger(0)), pb.createAnd(pb.createNot(hashTableRange), insertLgth[i]));
+        //    pb.createAssign(pb.createExtract(getOutputStreamVar("countStream"), pb.getInteger(0)), pb.createAnd(pb.createNot(dontDecompressRange), insertLgth[i]));
         //}
-        pb.createAssign(pb.createExtract(lengthVar, pb.getInteger(i)), pb.createAnd(pb.createNot(hashTableRange), insertLgth[i]));
+        pb.createAssign(pb.createExtract(lengthVar, pb.getInteger(i)), pb.createAnd(pb.createNot(dontDecompressRange), insertLgth[i]));
     }
 
-    //pb.createDebugPrint(hashTableRange, "hashTableRange");
-    pb.createAssign(pb.createExtract(getOutputStreamVar("countStream"), pb.getInteger(0)), hashTableRange);
+    //pb.createDebugPrint(dontDecompressRange, "dontDecompressRange");
+    pb.createAssign(pb.createExtract(getOutputStreamVar("countStream"), pb.getInteger(0)), dontDecompressRange);
+}
+
+kernel::StreamSet * kernel::ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> & P,
+                                EncodingInfo & encodingScheme,
+                                StreamSet * Basis,
+                                StreamSet * Results,
+                                StreamSet * hashtableMarks,
+                                StreamSet * decodedMarks) {
+// NOTE: The grep output requires complete lines to be printed as output;
+    //   and lines may be divided across multiple segments.
+    StreamSet * const ztfInsertionLengths = P->CreateStreamSet(5);
+    StreamSet * const countStream = P->CreateStreamSet(1); // unused
+    P->CreateKernelCall<ZTF_PhraseExpansionDecoder>(encodingScheme, Basis, ztfInsertionLengths, countStream, Results, false);
+    StreamSet * const ztfRunSpreadMask = InsertionSpreadMask(P, ztfInsertionLengths);
+    StreamSet * const ztfHash_u8_Basis = P->CreateStreamSet(8);
+    //P->CreateKernelCall<DebugDisplayKernel>("ztfRunSpreadMask", ztfRunSpreadMask);
+    // only spread the bits for the phrases to be decompressed
+    SpreadByMask(P, ztfRunSpreadMask, Basis, ztfHash_u8_Basis);
+
+    // StreamSet * decodedMarks = P->CreateStreamSet(SymCount * encodingScheme.byLength.size());
+    // StreamSet * hashtableMarks = P->CreateStreamSet(SymCount * encodingScheme.byLength.size());
+    StreamSet * hashtableSpan = P->CreateStreamSet(1);
+    P->CreateKernelCall<ZTF_PhraseDecodeLengths>(encodingScheme, 2/*SymCount*/, ztfHash_u8_Basis, decodedMarks, hashtableMarks, hashtableSpan);
+
+    StreamSet * const ztfHash_u8bytes = P->CreateStreamSet(1, 8);
+    P->CreateKernelCall<P2SKernel>(ztfHash_u8_Basis, ztfHash_u8bytes);
+    return ztfHash_u8bytes;
 }

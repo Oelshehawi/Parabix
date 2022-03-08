@@ -51,7 +51,7 @@ extern BinaryFilesMode BinaryFilesFlag;
     
 extern bool NullDataFlag; // -z
 extern bool UnicodeLinesFlag; // -Unicode-lines
-
+extern bool FullyDecompressFlag; // -ZTF-full-decompress
 
 /*
  *  C.  Grep output modes and options.
