@@ -152,6 +152,7 @@ GrepEngine::GrepEngine(BaseDriver &driver) :
     mWordBoundary_stream(nullptr),
     mZTFHashtableMarks(nullptr),
     mZTFDecodedMarks(nullptr),
+    mFilterSpan(nullptr),
     mUTF8_Transformer(re::NameTransformationMode::None),
     mEngineThread(pthread_self()) {}
 
@@ -429,6 +430,7 @@ void GrepEngine::grepPrologue(const std::unique_ptr<ProgramBuilder> & P, StreamS
     mWordBoundary_stream = nullptr;
     mZTFHashtableMarks = nullptr;
     mZTFDecodedMarks = nullptr;
+    mFilterSpan = nullptr;
     mPropertyStreamMap.clear();
 
     Scalar * const callbackObject = P->getInputScalar("callbackObject");
@@ -656,9 +658,10 @@ void GrepEngine::ZTFPreliminaryGrep(const std::unique_ptr<ProgramBuilder> & P, r
 void GrepEngine::ZTFDecmpLogic(const std::unique_ptr<ProgramBuilder> & P, StreamSet * Source, StreamSet * Results, StreamSet * Uncompressed_basis) {
     mZTFHashtableMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size());
     mZTFDecodedMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size());
+    mFilterSpan = P->CreateStreamSet(1);
     StreamSet * ztfHash_u8bytes = P->CreateStreamSet(1, 8); // nullptr ?
     if (hasComponent(mExternalComponents, Component::ZTF8index)) {
-        ztfHash_u8bytes = ZTFLinesLogic(P, encodingScheme1, Source, Results, mZTFHashtableMarks, mZTFDecodedMarks);
+        ztfHash_u8bytes = ZTFLinesLogic(P, encodingScheme1, Source, Results, mZTFHashtableMarks, mZTFDecodedMarks, mFilterSpan);
     }
 
     const auto n = encodingScheme1.byLength.size();
@@ -683,11 +686,10 @@ void GrepEngine::ZTFDecmpLogic(const std::unique_ptr<ProgramBuilder> & P, Stream
             u8bytes = output_bytes;
         }
     }
-    // StreamSet * const decoded = P->CreateStreamSet(8);
-    P->CreateKernelCall<S2PKernel>(u8bytes, Uncompressed_basis);
-    // // Remove the dictionary segments from uncompressed data
-    // StreamSet * const decoded_basis = P->CreateStreamSet(8);
-    // FilterByMask(P, hashtableSpan, decoded, decoded_basis);
+    StreamSet * const decoded = P->CreateStreamSet(8);
+    P->CreateKernelCall<S2PKernel>(u8bytes, decoded);
+    // Remove the dictionary segments and compressed segments from decompressed data
+    FilterByMask(P, mFilterSpan, decoded, Uncompressed_basis);
 }
 
 StreamSet * GrepEngine::grepPipeline(const std::unique_ptr<ProgramBuilder> & P, StreamSet * InputStream) {
@@ -705,6 +707,7 @@ StreamSet * GrepEngine::grepPipeline(const std::unique_ptr<ProgramBuilder> & P, 
         // check for matches in the uncompressed data
         StreamSet * Uncompressed_basis = P->CreateStreamSet(ENCODING_BITS, 1);
         ZTFDecmpLogic(P, SourceStream, Matches, Uncompressed_basis);
+        SourceStream = Uncompressed_basis;
     }
     else {
         if (UnicodeIndexing) {

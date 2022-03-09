@@ -195,6 +195,7 @@ protected:
     kernel::StreamSet * mWordBoundary_stream;
     kernel::StreamSet * mZTFHashtableMarks;
     kernel::StreamSet * mZTFDecodedMarks;
+    kernel::StreamSet * mFilterSpan;
     re::UTF8_Transformer mUTF8_Transformer;
     pthread_t mEngineThread;
 };

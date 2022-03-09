@@ -108,12 +108,15 @@ public:
                       StreamSet * basisBits,
                       StreamSet * groupStreams,
                       StreamSet * hashtableStreams,
-                      StreamSet * hashtableSpan);
+                      StreamSet * hashtableSpan,
+                      StreamSet * matches = nullptr,
+                      bool fullyDecompress = true);
 protected:
     void generatePabloMethod() override;
     EncodingInfo & mEncodingScheme;
     unsigned mDecodeStreamCount;
     unsigned mNumSym;
+    unsigned mFullyDecompress;
 };
 
 class ZTF_PhraseExpansionDecoder final: public pablo::PabloKernel {
@@ -143,7 +146,8 @@ kernel::StreamSet * ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> & P,
                    StreamSet * Basis,
                    StreamSet * Results,
                    StreamSet * hashtableMarks,
-                   StreamSet * decodedMarks);
+                   StreamSet * decodedMarks,
+                   StreamSet * filterSpan);
 
 }
 #endif
