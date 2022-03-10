@@ -316,7 +316,8 @@ ztfHashDecmpFunctionType ztfHash_decompression_gen (CPUDriver & driver) {
     P->CreateKernelCall<S2PKernel>(source, ztfHashBasis);
     StreamSet * const ztfInsertionLengths = P->CreateStreamSet(5);
     StreamSet * const countStream = P->CreateStreamSet(1);
-    P->CreateKernelCall<ZTF_PhraseExpansionDecoder>(encodingScheme1, ztfHashBasis, ztfInsertionLengths, countStream);
+    StreamSet * const ztfHash_Basis_updated = P->CreateStreamSet(8);
+    P->CreateKernelCall<ZTF_PhraseExpansionDecoder>(encodingScheme1, ztfHashBasis, ztfInsertionLengths, countStream, ztfHash_Basis_updated);
     //P->CreateKernelCall<DebugDisplayKernel>("countStream", countStream);
     //P->CreateKernelCall<codeword_index>(ztfHashBasis, countStream);
     P->CreateKernelCall<PopcountKernel>(countStream, P->getOutputScalar("count2"));

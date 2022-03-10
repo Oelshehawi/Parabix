@@ -126,6 +126,7 @@ public:
                          StreamSet * const basis,
                          StreamSet * insertBixNum,
                          StreamSet * countStream,
+                         StreamSet * basisUpdated,
                          StreamSet * matches = nullptr,
                          bool fullyDecompress = true);
 protected:

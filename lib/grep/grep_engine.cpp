@@ -360,10 +360,11 @@ StreamSet * GrepEngine::getFullyDecompressedBytes(const std::unique_ptr<ProgramB
     P->CreateKernelCall<S2PKernel>(coded_bytes, ztfHashBasis);
     StreamSet * const ztfInsertionLengths = P->CreateStreamSet(5);
     StreamSet * countStream = P->CreateStreamSet(1);
-    P->CreateKernelCall<ZTF_PhraseExpansionDecoder>(encodingScheme1, ztfHashBasis, ztfInsertionLengths, countStream);
+    StreamSet * const ztfHash_Basis_updated = P->CreateStreamSet(8);
+    P->CreateKernelCall<ZTF_PhraseExpansionDecoder>(encodingScheme1, ztfHashBasis, ztfInsertionLengths, countStream, ztfHash_Basis_updated);
     StreamSet * const ztfRunSpreadMask = InsertionSpreadMask(P, ztfInsertionLengths);
     StreamSet * const ztfHash_u8_Basis = P->CreateStreamSet(8);
-    SpreadByMask(P, ztfRunSpreadMask, ztfHashBasis, ztfHash_u8_Basis);
+    SpreadByMask(P, ztfRunSpreadMask, ztfHash_Basis_updated, ztfHash_u8_Basis);
 
     StreamSet * decodedMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size());
     StreamSet * hashtableMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size());
@@ -428,9 +429,6 @@ void GrepEngine::grepPrologue(const std::unique_ptr<ProgramBuilder> & P, StreamS
     mU8index = nullptr;
     mGCB_stream = nullptr;
     mWordBoundary_stream = nullptr;
-    mZTFHashtableMarks = nullptr;
-    mZTFDecodedMarks = nullptr;
-    mFilterSpan = nullptr;
     mPropertyStreamMap.clear();
 
     Scalar * const callbackObject = P->getInputScalar("callbackObject");
@@ -659,10 +657,13 @@ void GrepEngine::ZTFDecmpLogic(const std::unique_ptr<ProgramBuilder> & P, Stream
     mZTFHashtableMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size());
     mZTFDecodedMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size());
     mFilterSpan = P->CreateStreamSet(1);
-    StreamSet * ztfHash_u8bytes = P->CreateStreamSet(1, 8); // nullptr ?
-    if (hasComponent(mExternalComponents, Component::ZTF8index)) {
-        ztfHash_u8bytes = ZTFLinesLogic(P, encodingScheme1, Source, Results, mZTFHashtableMarks, mZTFDecodedMarks, mFilterSpan);
+    StreamSet * SourceBits = Source;
+    if (Source->getNumElements() == 1) {
+        StreamSet * src_bits = P->CreateStreamSet(8);
+        P->CreateKernelCall<S2PKernel>(Source, src_bits);
+        SourceBits = src_bits;
     }
+    StreamSet * ztfHash_u8bytes = ZTFLinesLogic(P, encodingScheme1, SourceBits, Results, mZTFHashtableMarks, mZTFDecodedMarks, mFilterSpan);
 
     const auto n = encodingScheme1.byLength.size();
     StreamSet * u8bytes = ztfHash_u8bytes;
@@ -690,31 +691,48 @@ void GrepEngine::ZTFDecmpLogic(const std::unique_ptr<ProgramBuilder> & P, Stream
     P->CreateKernelCall<S2PKernel>(u8bytes, decoded);
     // Remove the dictionary segments and compressed segments from decompressed data
     FilterByMask(P, mFilterSpan, decoded, Uncompressed_basis);
+    // StreamSet * const filtered_bytes = P->CreateStreamSet(1, 8);
+    // P->CreateKernelCall<P2SKernel>(Uncompressed_basis, filtered_bytes);
+    // P->CreateKernelCall<StdOutKernel>(filtered_bytes);
 }
 
 StreamSet * GrepEngine::grepPipeline(const std::unique_ptr<ProgramBuilder> & P, StreamSet * InputStream) {
     StreamSet * SourceStream = getBasis(P, InputStream);
 
-    grepPrologue(P, SourceStream);
-
-    prepareExternalStreams(P, SourceStream);
-
-    StreamSet * Matches = P->CreateStreamSet(1, 1);
+    StreamSet * PreliminaryMatches = P->CreateStreamSet(1, 1);
     // run preliminary matching on the compressed streams
     // if any match exists, mark the corresponding dictionary; only decompress selective compressed segments.
-    if (mBinaryFilesMode == argv::ZTFCompressed  && hasComponent(mExternalComponents, Component::ZTF8index)) {
-        ZTFPreliminaryGrep(P, mRE, SourceStream, Matches);
-        // check for matches in the uncompressed data
+    if (mBinaryFilesMode == argv::ZTFCompressed && hasComponent(mExternalComponents, Component::ZTF8index)) {
+        grepPrologue(P, SourceStream);
+        prepareExternalStreams(P, SourceStream);
+        mZTFHashtableMarks = nullptr;
+        mZTFDecodedMarks = nullptr;
+        mFilterSpan = nullptr;
+        ZTFPreliminaryGrep(P, mRE, SourceStream, PreliminaryMatches);
+        // check for PreliminaryMatches in the uncompressed data
         StreamSet * Uncompressed_basis = P->CreateStreamSet(ENCODING_BITS, 1);
-        ZTFDecmpLogic(P, SourceStream, Matches, Uncompressed_basis);
-        SourceStream = Uncompressed_basis;
-    }
-    else {
-        if (UnicodeIndexing) {
-            UnicodeIndexedGrep(P, mRE, SourceStream, Matches);
-        } else {
-            U8indexedGrep(P, mRE, SourceStream, Matches);
+        ZTFDecmpLogic(P, SourceStream, PreliminaryMatches, Uncompressed_basis);
+        if (SourceStream->getNumElements() == 1) {
+            StreamSet * src_bytes = P->CreateStreamSet(1, 8);
+            P->CreateKernelCall<P2SKernel>(Uncompressed_basis, src_bytes);
+            SourceStream = src_bytes;
         }
+        else {
+            SourceStream = Uncompressed_basis;
+        }
+        mBinaryFilesMode = argv::Text;
+        // StreamSet * source_bytes = P->CreateStreamSet(1, 8);
+        // P->CreateKernelCall<P2SKernel>(SourceStream, source_bytes);
+        // P->CreateKernelCall<StdOutKernel>(source_bytes);
+    }
+    grepPrologue(P, SourceStream);
+    prepareExternalStreams(P, SourceStream);
+    StreamSet * Matches = P->CreateStreamSet(1, 1);
+
+    if (UnicodeIndexing) {
+        UnicodeIndexedGrep(P, mRE, SourceStream, Matches);
+    } else {
+        U8indexedGrep(P, mRE, SourceStream, Matches);
     }
     if (hasComponent(mExternalComponents, Component::MoveMatchesToEOL)) {
         StreamSet * const MovedMatches = P->CreateStreamSet();
@@ -888,20 +906,39 @@ void applyColorization(const std::unique_ptr<ProgramBuilder> & E,
 void EmitMatchesEngine::grepPipeline(const std::unique_ptr<ProgramBuilder> & E, StreamSet * ByteStream, bool BatchMode) {
     StreamSet * SourceStream = getBasis(E, ByteStream);
 
+    StreamSet * Matches = E->CreateStreamSet(1, 1);
+    StreamSet * PreliminaryMatches = E->CreateStreamSet(1, 1);
+    if (mBinaryFilesMode == argv::ZTFCompressed  && hasComponent(mExternalComponents, Component::ZTF8index)) {
+        mZTFHashtableMarks = nullptr;
+        mZTFDecodedMarks = nullptr;
+        mFilterSpan = nullptr;
+        grepPrologue(E, SourceStream);
+        prepareExternalStreams(E, SourceStream);
+        ZTFPreliminaryGrep(E, mRE, SourceStream, PreliminaryMatches);
+        // check for PreliminaryMatches in the uncompressed data
+        StreamSet * Uncompressed_basis = E->CreateStreamSet(ENCODING_BITS, 1);
+        ZTFDecmpLogic(E, SourceStream, PreliminaryMatches, Uncompressed_basis);
+        if (SourceStream->getNumElements() == 1) {
+            StreamSet * source_bytes = E->CreateStreamSet(1, 8);
+            E->CreateKernelCall<P2SKernel>(Uncompressed_basis, source_bytes);
+            SourceStream = source_bytes;
+        }
+        else {
+            SourceStream = Uncompressed_basis;
+        }
+        mBinaryFilesMode = argv::Text;
+        // StreamSet * source_bytes = E->CreateStreamSet(1, 8);
+        // E->CreateKernelCall<P2SKernel>(SourceStream, source_bytes);
+        // E->CreateKernelCall<StdOutKernel>(source_bytes);
+    }
     grepPrologue(E, SourceStream);
 
     prepareExternalStreams(E, SourceStream);
 
-    StreamSet * Matches = E->CreateStreamSet(1, 1);
-    if (hasComponent(mExternalComponents, Component::ZTF8index)) {
-        ZTFPreliminaryGrep(E, mRE, SourceStream, Matches);
-    }
-    else {
-        if (UnicodeIndexing) {
-            UnicodeIndexedGrep(E, mRE, SourceStream, Matches);
-        } else {
-            U8indexedGrep(E, mRE, SourceStream, Matches);
-        }
+    if (UnicodeIndexing) {
+        UnicodeIndexedGrep(E, mRE, SourceStream, Matches);
+    } else {
+        U8indexedGrep(E, mRE, SourceStream, Matches);
     }
     StreamSet * MatchedLineEnds = Matches;
     if (hasComponent(mExternalComponents, Component::MoveMatchesToEOL)) {
