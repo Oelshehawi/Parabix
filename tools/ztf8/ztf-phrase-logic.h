@@ -109,7 +109,6 @@ public:
                       StreamSet * groupStreams,
                       StreamSet * hashtableStreams,
                       StreamSet * hashtableSpan,
-                      StreamSet * matches = nullptr,
                       bool fullyDecompress = true);
 protected:
     void generatePabloMethod() override;
@@ -144,10 +143,10 @@ protected:
 
 kernel::StreamSet * ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> & P,
                    EncodingInfo & encodingScheme,
-                   StreamSet * Basis,
-                   StreamSet * Results,
-                   StreamSet * hashtableMarks,
-                   StreamSet * decodedMarks,
+                   StreamSet * const Basis,
+                   StreamSet * const Results,
+                   StreamSet * const hashtableMarks,
+                   StreamSet * const decodedMarks,
                    StreamSet * filterSpan);
 
 }
