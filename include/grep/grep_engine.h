@@ -130,7 +130,7 @@ protected:
 
     // Transpose to basis bit streams, if required otherwise return the source byte stream.
     kernel::StreamSet * getBasis(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * ByteStream);
-    kernel::StreamSet * getFullyDecompressedBytes(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * const ByteStream);
+    void getFullyDecompressedBytes(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * const ByteStream, kernel::StreamSet * const decoded_bytes);
 
     // Initial grep set-up.
     // Implement any required checking/processing of null characters, determine the
@@ -144,7 +144,7 @@ protected:
     void ZTFPreliminaryGrep(const std::unique_ptr<kernel::ProgramBuilder> &P, re::RE * re, kernel::StreamSet * Source, kernel::StreamSet * Results);
     void ZTFDecmpLogic(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * Source, kernel::StreamSet * const Results, kernel::StreamSet * const Uncompressed_basis);
     kernel::StreamSet * grepPipeline(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * ByteStream);
-    kernel::StreamSet * ztfGrepPipeline(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * const ByteStream);
+    void ztfGrepPipeline(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * const ByteStream, kernel::StreamSet * const decoded_byteStream);
     virtual uint64_t doGrep(const std::vector<std::string> & fileNames, std::ostringstream & strm);
     int32_t openFile(const std::string & fileName, std::ostringstream & msgstrm);
 
@@ -256,8 +256,6 @@ class EmitMatchesEngine final : public GrepEngine {
 public:
     EmitMatchesEngine(BaseDriver & driver);
     void grepPipeline(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * ByteStream, bool BatchMode = false);
-    void ztfGrepPipeline(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * const ByteStream, kernel::StreamSet * const decoded_byteStream);
-    void getFullyDecompressedBytes(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * const ByteStream, kernel::StreamSet * const decoded_bytes);
     void grepCodeGen() override;
 private:
     uint64_t doGrep(const std::vector<std::string> & fileNames, std::ostringstream & strm) override;

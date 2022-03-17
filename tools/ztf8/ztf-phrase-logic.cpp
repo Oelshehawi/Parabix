@@ -310,8 +310,7 @@ void ZTF_PhraseDecodeLengths::generatePabloMethod() {
     PabloAST * fileStart = pb.createNot(pb.createAdvance(pb.createOnes(), 1));
     PabloAST * EOFbit = pb.createAtEOF(pb.createAdvance(pb.createOnes(), 1));
 
-    PabloAST * filterSpan = pb.createIntrinsicCall(pablo::Intrinsic::SpanUpTo, {fileStart, EOFbit});
-    filterSpan = pb.createXor(filterSpan, hashTableSpan); // => ~(hashTableSpan)
+    PabloAST * filterSpan = pb.createNot(hashTableSpan);
 
     PabloAST * hashtableBoundaries = pb.createOr(hashTableBoundaryStartFinal, hashTableBoundaryEndFinal);//, toEliminate);
     PabloAST * boundaryEndInvalidCodeword = pb.createAdvance(hashTableBoundaryEndFinal, 3);
@@ -367,7 +366,7 @@ void ZTF_PhraseDecodeLengths::generatePabloMethod() {
         }
     }
     for (unsigned i = 0; i < (mNumSym * mEncodingScheme.byLength.size()); i++) {
-        pb.createAssign(pb.createExtract(groupStreamVar, pb.getInteger(i)), pb.createAnd3(groupStreams[i], pb.createNot(hashTableSpan), expansionSpan));
+        pb.createAssign(pb.createExtract(groupStreamVar, pb.getInteger(i)), pb.createAnd(groupStreams[i], pb.createNot(hashTableSpan)));
         pb.createAssign(pb.createExtract(hashTableStreamVar, pb.getInteger(i)), pb.createAnd(groupStreams[i], pb.createXor(hashtableBoundaries, hashTableSpan)));
     }
     // pb.createDebugPrint(pb.createCount(filterSpan), "filterSpan");
@@ -400,11 +399,15 @@ ZTF_PhraseExpansionDecoder::ZTF_PhraseExpansionDecoder(BuilderRef b,
 void ZTF_PhraseExpansionDecoder::generatePabloMethod() {
     PabloBuilder pb(getEntryScope());
     BixNumCompiler bnc(pb);
-    //std::vector<PabloAST *> count;
     PabloAST * matches = pb.createZeroes();
+    PabloAST * expansionSpan = pb.createOnes();
     if (!mFullyDecompress) {
         matches = getInputStreamSet("matches")[0];
     }
+    // TODO: eliminate matches that have codeword suffix as match start pos
+    // matchStart = matches XOR lookahead(matches, 1) ==> if they are spans
+    PabloAST * matchStartPos = matches; // correct for count only engine
+    PabloAST * matches_updated = matchStartPos;
     std::vector<PabloAST *> basis = getInputStreamSet("basis");
     std::vector<PabloAST *> ASCII_lookaheads;
     std::vector<PabloAST *> sfx_80_BF_lookaheads;
@@ -426,19 +429,6 @@ void ZTF_PhraseExpansionDecoder::generatePabloMethod() {
     PabloAST * hashTableSpan = pb.createIntrinsicCall(pablo::Intrinsic::SpanUpTo, {hashTableBoundaryStartFinal, hashTableBoundaryEndFinal});
     PabloAST * toEliminate = pb.createAnd(pb.createLookahead(basis[7], 1), pb.createOr(hashTableBoundaryStart, hashTableBoundaryEnd));
     hashTableSpan = pb.createOr3(hashTableSpan, hashTableBoundaryEndFinal, toEliminate);
-
-    PabloAST * expansionSpan = pb.createOnes();
-    // pb.createDebugPrint(pb.createCount(matches), "matches");
-    // pb.createDebugPrint(hashTableSpan, "hashTableSpan");
-    // pb.createDebugPrint(pb.createCount(hashTableBoundaryStartFinal), "hashTableBoundaryStartFinal");
-    // pb.createDebugPrint(pb.createCount(hashTableBoundaryEndFinal), "hashTableBoundaryEndFinal");
-    if (!mFullyDecompress) {
-        expansionSpan = pb.createZeroes();
-        expansionSpan = pb.createIntrinsicCall(pablo::Intrinsic::SpanUpTo, {matches, hashTableBoundaryStartFinal});
-        PabloAST * initialExpansionSpan = pb.createIntrinsicCall(pablo::Intrinsic::SpanUpTo, {hashTableBoundaryStartFinal, matches});
-        expansionSpan = pb.createAnd(pb.createNot(hashTableSpan), expansionSpan);
-        expansionSpan = pb.createOr(initialExpansionSpan, expansionSpan);
-    }
 
     for (unsigned i = 2; i < mEncodingScheme.maxEncodingBytes(); i++) {
         PabloAST * ASCII_lookahead_multibyte = pb.createAnd(ASCII_lookahead, pb.createNot(pb.createLookahead(basis[7], pb.getInteger(i))));
@@ -520,20 +510,37 @@ void ZTF_PhraseExpansionDecoder::generatePabloMethod() {
             }
             toInsert = bnc.AddModular(relative, lo - groupInfo.encoding_bytes);
         }
+        unsigned adv_pos = (i < 3) ? 2 : 3;
+        adv_pos = (i == 4) ? 4 : 3;
+        for (unsigned p = 0; p < adv_pos; p++) {
+            // do not consider any codeword suffixes as match start position
+            matches_updated = pb.createAnd(matches_updated, pb.createNot(pb.createAdvance(inGroup, p)));
+        }
         for (unsigned j = 0; j < 5; j++) {
             insertLgth[j] = pb.createSel(inGroup, toInsert[j], insertLgth[j], "insertLgth[" + std::to_string(j) + "]");
         }
     }
-    Var * lengthVar = getOutputStreamVar("insertBixNum");
-    PabloAST * nonHashTableRange = pb.createNot(hashTableSpan);
+    PabloAST * initialExpansionSpan = pb.createZeroes();
+    if (!mFullyDecompress) {
+        // span from match marks till end of cmp-data of that segment.
+        expansionSpan = pb.createZeroes();
+        // span the cmp-data segments that have matches; doesn't go beyond the segment where the last match was found
+        expansionSpan = pb.createIntrinsicCall(pablo::Intrinsic::SpanUpTo, {/*matches_updated*/matches, hashTableBoundaryStartFinal});
+        initialExpansionSpan = pb.createIntrinsicCall(pablo::Intrinsic::SpanUpTo, {hashTableBoundaryStartFinal, matches});
+        // remove ht from expansionSpan
+        expansionSpan = pb.createOr(expansionSpan, /*initialExpansionSpan,*/ matches);
+        expansionSpan = pb.createAnd(pb.createNot(hashTableSpan), expansionSpan);
+    }
     // pb.createDebugPrint(pb.createCount(expansionSpan), "expansionSpan");
-    // pb.createDebugPrint(pb.createCount(pb.createOr(hashTableSpan, expansionSpan)), "pb.createOr(hashTableSpan, expansionSpan)");
-    // pb.createDebugPrint(pb.createCount(matches), "matches");
+    // pb.createDebugPrint(pb.createCount(initialExpansionSpan), "initialExpansionSpan");
     // pb.createDebugPrint(pb.createCount(hashTableBoundaryStartFinal), "hashTableBoundaryStartFinal");
+    // pb.createDebugPrint(pb.createCount(matches), "matches");
+    // pb.createDebugPrint(pb.createCount(matches_updated), "matches_updated");
     // pb.createDebugPrint(pb.createCount(hashTableBoundaryEndFinal), "hashTableBoundaryEndFinal");
-    // pb.createDebugPrint(pb.createAnd(nonHashTableRange, expansionSpan), "pb.createAnd(nonHashTableRange, expansionSpan)");
+
+    Var * lengthVar = getOutputStreamVar("insertBixNum");
     for (unsigned i = 0; i < 5; i++) {
-        pb.createAssign(pb.createExtract(lengthVar, pb.getInteger(i)), pb.createAnd3(nonHashTableRange, insertLgth[i], expansionSpan));
+        pb.createAssign(pb.createExtract(lengthVar, pb.getInteger(i)), pb.createAnd3(pb.createNot(hashTableSpan), insertLgth[i], expansionSpan));
     }
     Var * basisUpdatedVar = getOutputStreamVar("basisUpdated");
     for (unsigned i = 0; i < basis.size(); i++) {
