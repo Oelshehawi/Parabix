@@ -70,30 +70,46 @@ class WordCharacterValidator final : public RE_Validator {
 public:
     WordCharacterValidator(): RE_Validator("WordCharacterValidator"),
     mPropObj(UCD::get_WORD_PropertyObject()),
-    mWordOnlySet(mPropObj->GetCodepointSet("Yes"))
+    mWordOnlySet(mPropObj->GetCodepointSet("Yes")),
+    mCurSubRegexLen(0), mMaxSubRegexLen(0), mAllWordChars(true)
     { }
 
     bool validateCC(const CC * cc) override {
         // if CC is not in range of valid word characters return false
-        bool allWordChars = true;
         for (const auto range : *cc) {
             const auto lo = re::lo_codepoint(range);
             const auto hi = re::hi_codepoint(range);
+            mCurSubRegexLen += (hi-lo) + 1;
             if (!mWordOnlySet.contains(hi) || !mWordOnlySet.contains(lo)) {
-                allWordChars = false;
+                mAllWordChars = false;
+                mMaxSubRegexLen = std::max(mMaxSubRegexLen, mCurSubRegexLen);
+                mCurSubRegexLen = 0;
             }
         }
-        return allWordChars;
+        mMaxSubRegexLen = std::max(mMaxSubRegexLen, mCurSubRegexLen);
+        return mAllWordChars;
+    }
+
+    // TODO: update mMaxSubRegexLen for alternations and repeatations
+
+    unsigned getMaxSubRegexLen() {
+        return mMaxSubRegexLen;
     }
 private:
     UCD::PropertyObject * mPropObj;
     UCD::UnicodeSet mWordOnlySet;
+    unsigned mCurSubRegexLen;
+    unsigned mMaxSubRegexLen;
+    bool mAllWordChars;
 
 };
 
-bool hasWordCharactersOnly(const RE * re) {
+unsigned getWordCharactersOnlySubRELen(const RE * re) {
     WordCharacterValidator v;
-    return v.validateRE(re);
+    if (v.validateRE(re)) {
+        return v.getMaxSubRegexLen();
+    }
+    return 0;
 }
 
 class NonUnicodeValidator : public RE_Validator {

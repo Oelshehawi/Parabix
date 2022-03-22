@@ -21,6 +21,9 @@
 #include <sstream>
 #include <kernel/io/stdout_kernel.h>                 // for StdOutKernel_
 #include <kernel/util/debug_display.h>
+#include <grep/grep_kernel.h>
+#include <kernel/streamutils/deletion.h>
+#include <kernel/util/linebreak_kernel.h>
 
 using namespace pablo;
 using namespace kernel;
@@ -376,9 +379,175 @@ void ZTF_PhraseDecodeLengths::generatePabloMethod() {
     pb.createAssign(pb.createExtract(getOutputStreamVar("hashtableSpan"), pb.getInteger(0)), filterSpan);
 }
 
-Bindings ZTF_PhraseExpansionDecoderInputBindings(EncodingInfo & encodingScheme, StreamSet * basis, StreamSet * matches) {
+std::pair<unsigned, unsigned> getNumOfPrefix(unsigned groupNo) {
+    switch(groupNo) {
+        case 0: return std::make_pair(8, 1);
+        case 1: return std::make_pair(8, 1);
+        case 2: return std::make_pair(4, 4);
+        case 3: return std::make_pair(2, 8);
+        case 4: return std::make_pair(1, 1);
+        default: return std::make_pair(0, 0);
+    }
+}
+unsigned getLenStartPfx(EncodingInfo & encodingScheme, unsigned groupNo, unsigned length) {
+    unsigned groupStartPfx = 0;
+    auto g = encodingScheme.byLength[groupNo];
+    switch(groupNo) {
+        case 0: groupStartPfx = 192;
+        case 1: groupStartPfx = 200;
+        case 2: groupStartPfx = 208;
+        case 3: groupStartPfx = 224;
+        case 4: groupStartPfx = 240;
+        default: groupStartPfx = 0;
+    }
+    return groupStartPfx + (length - g.lo);
+}
+
+std::vector<unsigned> getPrefixForGroupLength(EncodingInfo & encodingScheme, unsigned length) {
+    std::vector<unsigned> prefixes;
+    // llvm::errs() << "p-> " << length << "\n";
+    unsigned groupNo = encodingScheme.getLengthGroupNo(length);
+    auto numPfx = getNumOfPrefix(groupNo); // # of prefix, jump
+    unsigned lenPfx = getLenStartPfx(encodingScheme, groupNo, length); //length start pfx offset
+    for (unsigned i = 0; i < numPfx.first; i++) {
+        prefixes.push_back(lenPfx + (i * numPfx.second));
+    }
+    // for (auto p : prefixes) {
+    //     llvm::errs() << "p-> " << p << "\n";
+    // }
+    return prefixes;
+}
+DictionaryBoundary::DictionaryBoundary(BuilderRef kb,
+                EncodingInfo & encodingScheme,
+                unsigned wordOnlyRELen,
+                StreamSet * basis,
+                StreamSet * results,
+                StreamSet * dictStart,
+                StreamSet * candidateMatchesNonFinal,
+                StreamSet * candidateMatchesInDict,
+                bool matchOnly)
+: PabloKernel(kb, "DictionaryBoundary_" + std::to_string(matchOnly) + "_" + std::to_string(wordOnlyRELen),
+            {Binding{"basis", basis, FixedRate(), LookAhead(encodingScheme.maxEncodingBytes() - 1)},
+             Binding{"results", results, FixedRate(), LookAhead(1)}},
+            {Binding{"dictStart", dictStart, FixedRate(), Add1()},
+             Binding{"candidateMatchesNonFinal", candidateMatchesNonFinal, FixedRate(), Add1()},
+             Binding{"candidateMatchesInDict", candidateMatchesInDict, FixedRate(), Add1()}}),
+mEncodingScheme(encodingScheme), mMatchOnly(matchOnly), mCandidateMatchLen(wordOnlyRELen) { }
+
+void DictionaryBoundary::generatePabloMethod() {
+    PabloBuilder pb(getEntryScope());
+    BixNumCompiler bnc(pb);
+    std::vector<PabloAST *> basis = getInputStreamSet("basis");
+    PabloAST * results = getInputStreamSet("results")[0];
+    // Almost done except the prefix byte: eliminate matches that have codeword suffix as match start pos
+    PabloAST * candidateMatchStart = results;
+    if (!mMatchOnly) {
+        candidateMatchStart = pb.createOr(results, pb.createLookahead(results, 1));
+        candidateMatchStart = pb.createXor(candidateMatchStart, results);
+    }
+
+    auto pfx = getPrefixForGroupLength(mEncodingScheme, mCandidateMatchLen);
+    PabloAST * hashTableBoundaryCommon = pb.createAnd(pb.createAnd(basis[7], basis[6]), pb.createAnd(basis[5], basis[4])); //Fx
+    PabloAST * hashTableBoundaryStartHi = pb.createAnd3(basis[3], basis[2], basis[1]); //xE, xF
+    PabloAST * hashTableBoundaryEndHi = pb.createAnd(hashTableBoundaryStartHi, basis[0]); //xF
+    hashTableBoundaryStartHi = pb.createXor(hashTableBoundaryStartHi, hashTableBoundaryEndHi); // xE
+
+    PabloAST * hashTableBoundaryStart = pb.createAnd(hashTableBoundaryCommon, hashTableBoundaryStartHi);
+    PabloAST * hashTableBoundaryEnd = pb.createAnd(hashTableBoundaryCommon, hashTableBoundaryEndHi);
+    PabloAST * hashTableBoundaryStartFinal = pb.createAnd(hashTableBoundaryStart, pb.createAdvance(hashTableBoundaryStart, 1));
+    PabloAST * hashTableBoundaryEndFinal = pb.createAnd(hashTableBoundaryEnd, pb.createAdvance(hashTableBoundaryEnd, 1));
+    PabloAST * EOFbit = pb.createAtEOF(pb.createAdvance(pb.createOnes(), 1));
+    hashTableBoundaryStartFinal = pb.createOr(hashTableBoundaryStartFinal, EOFbit); // set last bit as a 1-bit indicating potential start of next segment
+
+    PabloAST * hashTableSpan = pb.createIntrinsicCall(pablo::Intrinsic::SpanUpTo, {hashTableBoundaryStartFinal, hashTableBoundaryEndFinal});
+    PabloAST * toEliminate = pb.createAnd(pb.createLookahead(basis[7], 1), pb.createOr(hashTableBoundaryStart, hashTableBoundaryEnd));
+    hashTableSpan = pb.createOr3(hashTableSpan, hashTableBoundaryEndFinal, toEliminate);
+
+    PabloAST * ASCII = bnc.ULT(basis, 0x80);
+    PabloAST * suffix_80_BF = pb.createAnd(bnc.UGE(basis, 0x80), bnc.ULE(basis, 0xBF));
+    /// CHECK: Can be optional for now: (but might turn out to be an optimization technique) 
+    /// CHECK: if any codeword byte position collides with candidateMatchStart pos, eliminate that candidateMatchStart bit
+    for (unsigned i = 0; i < mEncodingScheme.byLength.size(); i++) {
+        PabloAST * groupStream = pb.createZeroes();
+        LengthGroupInfo groupInfo = mEncodingScheme.byLength[i];
+        unsigned lo = groupInfo.lo;
+        unsigned hi = groupInfo.hi;
+        unsigned base = groupInfo.prefix_base;
+        unsigned next_base = 0;
+        if (i < 2) {
+            next_base = base + 8;
+        }
+        else {
+            next_base = base + 16;
+        }
+
+        // Attempt 2:
+        PabloAST * moreCandidateMatches = pb.createZeroes();
+        if (mCandidateMatchLen >= lo && mCandidateMatchLen <= hi) {
+            for (auto p : pfx) {
+                moreCandidateMatches = pb.createOr(moreCandidateMatches, bnc.EQ(basis, p));
+            }
+        }
+        candidateMatchStart = pb.createOr(candidateMatchStart, pb.createAnd(moreCandidateMatches, pb.createNot(hashTableSpan)));
+
+        PabloAST * inGroup = pb.createAnd(bnc.UGE(basis, base), bnc.ULT(basis, next_base));
+        /// CHECK: eliminate any codeword prefix in dictionary matched incorrectly 
+        /* codeword bytes -> codeword range
+            2 -> C0-C7 00-7F
+            2 -> C8-CF 00-7F
+            2 -> D0-DF 00-7F
+            3 -> E0-EF 00-7F 00-7F / EO-EF 00-7F 80-BF
+            4 -> F0-FF 00-7F 00-7F 00-7F / F0-FF 00-7F 00-7F 80-BF
+        */
+        PabloAST * curGroupStream = pb.createAnd(pb.createAdvance(inGroup, 1), ASCII); // PFX 00-7F
+        candidateMatchStart = pb.createAnd(pb.createNot(curGroupStream), candidateMatchStart);
+        groupStream = curGroupStream;
+
+        for (unsigned j = 2; j < groupInfo.encoding_bytes; j++) {
+            groupStream = pb.createAnd(pb.createAdvance(groupStream, 1), ASCII);
+            // eliminate any candidate match start position that is a codeword suffix byte
+            candidateMatchStart = pb.createAnd(pb.createNot(groupStream), candidateMatchStart);
+            if (j+1 == groupInfo.encoding_bytes) {
+                // PFX 00-7F{1,2} 80-BF
+                curGroupStream = pb.createAnd(pb.createAdvance(curGroupStream, groupInfo.encoding_bytes-2), suffix_80_BF);
+                candidateMatchStart = pb.createAnd(pb.createNot(curGroupStream), candidateMatchStart); // can-skip: no valid character starts with suffix_80_BF 
+            }
+            groupStream = curGroupStream;
+        }
+        // if(i == 4 || i == 9) { // boundary bytes should not be treated as valid 4-byte codewords
+        //     groupStream = pb.createAnd(groupStream, allInvalidBoundaryCodeword);
+        // }
+
+        // Attempt 1: to get moreCandidateMatches
+        // for current LG, if candidateMatchStart pos is not a codeword AND is in dictionary span
+        // PabloAST * const matchesInDictionary = pb.createAnd(candidateMatchStart, /*a span of all the phrases in the length group*/);
+        // if candidateMatchStart has a 1-bit anywhere in the stream, retain all the curGroupStream markers
+        // Var * moreCandidateMatches = pb.createVar("codewordMatches", pb.createZeroes());
+        // auto itHasMatch = pb.createScope();
+        // pb.createIf(matchesInDictionary, itHasMatch);
+        // {   // mark the codewords in this length-group as candidate matches
+        //     // even a single bit in the segment is enough to decompress the span? -> but this is being done to precisely identify the
+        //     // LG corresponding to the candidate matches
+        //     itHasMatch.createAssign(moreCandidateMatches, pb.createAnd(groupStream, pb.createNot(hashTableSpan)));
+        // }
+    }
+
+    // pb.createDebugPrint(pb.createCount(hashTableBoundaryStartFinal), "hashTableBoundaryStartFinal");
+    // pb.createDebugPrint(pb.createCount(hashTableBoundaryEndFinal), "hashTableBoundaryEndFinal");
+    // pb.createDebugPrint(hashTableBoundaryStartFinal, "hashTableBoundaryStartFinal");
+    pb.createAssign(pb.createExtract(getOutputStreamVar("dictStart"), pb.getInteger(0)), hashTableBoundaryStartFinal);
+    // Results after eliminating invalid candidate matches in the dictionary
+    pb.createAssign(pb.createExtract(getOutputStreamVar("candidateMatchesNonFinal"), pb.getInteger(0)), candidateMatchStart);
+    pb.createAssign(pb.createExtract(getOutputStreamVar("candidateMatchesInDict"), pb.getInteger(0)), pb.createAnd(hashTableSpan, candidateMatchStart));
+    // pb.createAssign(pb.createExtract(getOutputStreamVar("dictEnd"), pb.getInteger(0)), hashTableBoundaryEndFinal);
+
+}
+
+Bindings ZTF_PhraseExpansionDecoderInputBindings(EncodingInfo & encodingScheme, StreamSet * basis, StreamSet * matches, StreamSet * segmentSpans) {
     if (matches == nullptr) return {Binding{"basis", basis, FixedRate(), LookAhead(encodingScheme.maxEncodingBytes() - 1)}};
-    return {Binding{"basis", basis, FixedRate(), LookAhead(encodingScheme.maxEncodingBytes() - 1)}, Binding{"matches", matches}};
+    return {Binding{"basis", basis, FixedRate(), LookAhead(encodingScheme.maxEncodingBytes() - 1)}, 
+            Binding{"matches", matches},
+            Binding{"segmentSpans", segmentSpans}};
 }
 
 ZTF_PhraseExpansionDecoder::ZTF_PhraseExpansionDecoder(BuilderRef b,
@@ -388,9 +557,10 @@ ZTF_PhraseExpansionDecoder::ZTF_PhraseExpansionDecoder(BuilderRef b,
                                            StreamSet * countStream,
                                            StreamSet * basisUpdated,
                                            StreamSet * matches,
+                                           StreamSet * segmentSpans,
                                            bool fullyDecompress)
 : pablo::PabloKernel(b, "ZTF_PhraseExpansionDecoder" + encodingScheme.uniqueSuffix() + std::to_string(fullyDecompress),
-                     ZTF_PhraseExpansionDecoderInputBindings(encodingScheme, basis, matches),
+                     ZTF_PhraseExpansionDecoderInputBindings(encodingScheme, basis, matches, segmentSpans),
                      {Binding{"insertBixNum", insertBixNum},
                       Binding{"countStream", countStream},
                       {Binding{"basisUpdated", basisUpdated}}}),
@@ -403,11 +573,8 @@ void ZTF_PhraseExpansionDecoder::generatePabloMethod() {
     PabloAST * expansionSpan = pb.createOnes();
     if (!mFullyDecompress) {
         matches = getInputStreamSet("matches")[0];
+        expansionSpan = getInputStreamSet("segmentSpans")[0];
     }
-    // TODO: eliminate matches that have codeword suffix as match start pos
-    // matchStart = matches XOR lookahead(matches, 1) ==> if they are spans
-    PabloAST * matchStartPos = matches; // correct for count only engine
-    PabloAST * matches_updated = matchStartPos;
     std::vector<PabloAST *> basis = getInputStreamSet("basis");
     std::vector<PabloAST *> ASCII_lookaheads;
     std::vector<PabloAST *> sfx_80_BF_lookaheads;
@@ -424,6 +591,10 @@ void ZTF_PhraseExpansionDecoder::generatePabloMethod() {
     PabloAST * hashTableBoundaryEnd = pb.createAnd(hashTableBoundaryCommon, hashTableBoundaryEndHi);
     PabloAST * hashTableBoundaryStartFinal = pb.createAnd(hashTableBoundaryStart, pb.createAdvance(hashTableBoundaryStart, 1));
     PabloAST * hashTableBoundaryEndFinal = pb.createAnd(hashTableBoundaryEnd, pb.createAdvance(hashTableBoundaryEnd, 1));
+    // pb.createDebugPrint(pb.createCount(hashTableBoundaryStartFinal), "hashTableBoundaryStartFinal");
+    // pb.createDebugPrint(pb.createCount(hashTableBoundaryEndFinal), "hashTableBoundaryEndFinal");
+    // pb.createDebugPrint(pb.createCount(expansionSpan), "expansionSpan");
+    // pb.createDebugPrint(pb.createCount(matches), "matches");
 
     PabloAST * fileStart = pb.createNot(pb.createAdvance(pb.createOnes(), 1));
     PabloAST * hashTableSpan = pb.createIntrinsicCall(pablo::Intrinsic::SpanUpTo, {hashTableBoundaryStartFinal, hashTableBoundaryEndFinal});
@@ -459,7 +630,6 @@ void ZTF_PhraseExpansionDecoder::generatePabloMethod() {
         17-32|  0xF0 - 0xFF (4-bytes)   } - lo - encoding_bytes = 17 - 4 = 13
                                             length = pfx-base + (lo - encoding_bytes)
     */
-
     BixNum insertLgth(5, pb.createZeroes());
     for (unsigned i = 0; i < mEncodingScheme.byLength.size(); i++) {
         BixNum relative(5, pb.createZeroes());
@@ -510,33 +680,10 @@ void ZTF_PhraseExpansionDecoder::generatePabloMethod() {
             }
             toInsert = bnc.AddModular(relative, lo - groupInfo.encoding_bytes);
         }
-        unsigned adv_pos = (i < 3) ? 2 : 3;
-        adv_pos = (i == 4) ? 4 : 3;
-        for (unsigned p = 0; p < adv_pos; p++) {
-            // do not consider any codeword suffixes as match start position
-            matches_updated = pb.createAnd(matches_updated, pb.createNot(pb.createAdvance(inGroup, p)));
-        }
         for (unsigned j = 0; j < 5; j++) {
             insertLgth[j] = pb.createSel(inGroup, toInsert[j], insertLgth[j], "insertLgth[" + std::to_string(j) + "]");
         }
     }
-    PabloAST * initialExpansionSpan = pb.createZeroes();
-    if (!mFullyDecompress) {
-        // span from match marks till end of cmp-data of that segment.
-        expansionSpan = pb.createZeroes();
-        // span the cmp-data segments that have matches; doesn't go beyond the segment where the last match was found
-        expansionSpan = pb.createIntrinsicCall(pablo::Intrinsic::SpanUpTo, {/*matches_updated*/matches, hashTableBoundaryStartFinal});
-        initialExpansionSpan = pb.createIntrinsicCall(pablo::Intrinsic::SpanUpTo, {hashTableBoundaryStartFinal, matches});
-        // remove ht from expansionSpan
-        expansionSpan = pb.createOr(expansionSpan, /*initialExpansionSpan,*/ matches);
-        expansionSpan = pb.createAnd(pb.createNot(hashTableSpan), expansionSpan);
-    }
-    // pb.createDebugPrint(pb.createCount(expansionSpan), "expansionSpan");
-    // pb.createDebugPrint(pb.createCount(initialExpansionSpan), "initialExpansionSpan");
-    // pb.createDebugPrint(pb.createCount(hashTableBoundaryStartFinal), "hashTableBoundaryStartFinal");
-    // pb.createDebugPrint(pb.createCount(matches), "matches");
-    // pb.createDebugPrint(pb.createCount(matches_updated), "matches_updated");
-    // pb.createDebugPrint(pb.createCount(hashTableBoundaryEndFinal), "hashTableBoundaryEndFinal");
 
     Var * lengthVar = getOutputStreamVar("insertBixNum");
     for (unsigned i = 0; i < 5; i++) {
@@ -554,15 +701,42 @@ kernel::StreamSet * kernel::ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> 
                                 EncodingInfo & encodingScheme,
                                 StreamSet * const Basis,
                                 StreamSet * const Results,
+                                unsigned wordOnlyRELen,
                                 StreamSet * const hashtableMarks,
                                 StreamSet * const decodedMarks,
                                 StreamSet * const filterSpan) {
 // NOTE: The grep output requires complete lines to be printed as output;
     //   and lines may be divided across multiple segments.
+    StreamSet * const dictStart = P->CreateStreamSet(1);
+    StreamSet * const dictEnd = P->CreateStreamSet(1);
+    StreamSet * const candidateMatchesNonFinal = P->CreateStreamSet(1);
+    StreamSet * const candidateMatchesInDict = P->CreateStreamSet(1);
+    /// WIP: Update results to remove any invalid matches in the dictionary (all done except pfx byte)
+    P->CreateKernelCall<DictionaryBoundary>(encodingScheme, wordOnlyRELen, Basis, Results, dictStart, candidateMatchesNonFinal, candidateMatchesInDict); // add 1-bit at the end of dictEnd stream
+    StreamSet * const candidateMatchesFinal = P->CreateStreamSet(1);
+    /// CHECK: Probable optimization: LLVM kernel to mark all the codewords that are marked for candidate matches
+    // StreamSet * const basis_bytes = P->CreateStreamSet(1, 8);
+    // P->CreateKernelCall<P2SKernel>(Basis, basis_bytes);
+    // P->CreateKernelCall<FinalizeCandidateMatches>(encodingScheme, basis_bytes, candidateMatchesInDict, candidateMatchesFinal);
+
+    StreamSet * const MatchedSegmentEnds = P->CreateStreamSet();
+    P->CreateKernelCall<MatchedLinesKernel>(/*candidateMatchesFinal*/candidateMatchesNonFinal, dictStart, MatchedSegmentEnds);
+    StreamSet * MatchesBySegment = P->CreateStreamSet(1, 1);
+    // 1-bit per segment indicating presense of candidate matches in the segment
+    FilterByMask(P, dictStart, MatchedSegmentEnds, MatchesBySegment);
+    // P->CreateKernelCall<DebugDisplayKernel>("MatchesBySegment", MatchesBySegment); // filter the bits that collide with dictionary start and also is a match at the segment end
+    StreamSet * SegmentStarts = P->CreateStreamSet(1, 1); // Advance dictStart by 1 position
+    P->CreateKernelCall<LineStartsKernel>(dictStart, SegmentStarts);
+    StreamSet * MatchedSegmentStarts = P->CreateStreamSet(1, 1);
+    SpreadByMask(P, SegmentStarts, MatchesBySegment, MatchedSegmentStarts);
+    StreamSet * MatchedSegmentSpans = P->CreateStreamSet(1, 1);
+    P->CreateKernelCall<LineSpansKernel>(MatchedSegmentStarts, MatchedSegmentEnds, MatchedSegmentSpans);
+    // P->CreateKernelCall<DebugDisplayKernel>("MatchedSegmentSpans", MatchedSegmentSpans);
+
     StreamSet * const ztfInsertionLengths = P->CreateStreamSet(5);
     StreamSet * const countStream = P->CreateStreamSet(1); // unused
     StreamSet * const ztfHash_Basis_updated = P->CreateStreamSet(8);
-    P->CreateKernelCall<ZTF_PhraseExpansionDecoder>(encodingScheme, Basis, ztfInsertionLengths, countStream, ztfHash_Basis_updated, Results, false);
+    P->CreateKernelCall<ZTF_PhraseExpansionDecoder>(encodingScheme, Basis, ztfInsertionLengths, countStream, ztfHash_Basis_updated, Results, MatchedSegmentSpans, false);
     // "Results" are for the compressed data match and cannot be used as markers for the uncompressed/ spread out bits!!
     StreamSet * const ztfRunSpreadMask = InsertionSpreadMask(P, ztfInsertionLengths);
     StreamSet * const ztfHash_u8_Basis = P->CreateStreamSet(8);

@@ -122,7 +122,7 @@ protected:
         MatchSpans = 8,
         GraphemeClusterBoundary = 16,
         WordBoundary = 32,
-        ZTF8index = 64,
+        WordOnlySubRE = 64,
     };
     bool hasComponent(Component compon_set, Component c);
     void setComponent(Component & compon_set, Component c);
@@ -202,6 +202,7 @@ protected:
     kernel::StreamSet * mCmpU8index;
     kernel::StreamSet * mCmpGCB_stream;
     kernel::StreamSet * mCmpWordBoundary_stream;
+    unsigned mWordOnlySubRegexLen;
     re::UTF8_Transformer mUTF8_Transformer;
     pthread_t mEngineThread;
 };

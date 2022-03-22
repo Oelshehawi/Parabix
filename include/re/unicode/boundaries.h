@@ -14,7 +14,7 @@ bool hasGraphemeClusterBoundary(const RE * re);
 
 bool hasWordBoundary(const RE * re);
 
-bool hasWordCharactersOnly(const RE * re);
+unsigned getWordCharactersOnlySubRELen(const RE * re);
 
 bool hasUnicodeLookahead(const RE * re);
 

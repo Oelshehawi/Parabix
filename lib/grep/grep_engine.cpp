@@ -157,6 +157,7 @@ GrepEngine::GrepEngine(BaseDriver &driver) :
     mCmpU8index(nullptr),
     mCmpGCB_stream(nullptr),
     mCmpWordBoundary_stream(nullptr),
+    mWordOnlySubRegexLen(0),
     mUTF8_Transformer(re::NameTransformationMode::None),
     mEngineThread(pthread_self()) {}
 
@@ -309,10 +310,9 @@ void GrepEngine::initRE(re::RE * re) {
             UnicodeIndexing = true;
         }
     }
-    if (hasWordCharactersOnly(mRE)) {
-        setComponent(mExternalComponents, Component::ZTF8index);
-        ZTF8Indexing = true;
-        // llvm::errs() << "ZTF8Indexing " << ZTF8Indexing << "\n";
+    mWordOnlySubRegexLen = getWordCharactersOnlySubRELen(mRE);
+    if (mWordOnlySubRegexLen > 0) {
+        setComponent(mExternalComponents, Component::WordOnlySubRE);
     }
 
     if (UnicodeIndexing) {
@@ -672,7 +672,7 @@ void GrepEngine::ZTFDecmpLogic(const std::unique_ptr<ProgramBuilder> & P, Stream
         P->CreateKernelCall<S2PKernel>(Source, src_bits);
         SourceBits = src_bits;
     }
-    StreamSet * const ztfHash_u8bytes = ZTFLinesLogic(P, encodingScheme1, SourceBits, Results, mZTFHashtableMarks, mZTFDecodedMarks, mFilterSpan);
+    StreamSet * const ztfHash_u8bytes = ZTFLinesLogic(P, encodingScheme1, SourceBits, Results, mWordOnlySubRegexLen, mZTFHashtableMarks, mZTFDecodedMarks, mFilterSpan);
     const auto n = encodingScheme1.byLength.size();
     StreamSet * u8bytes = ztfHash_u8bytes;
     for(unsigned sym = 0; sym < 2/*SymCount*/; sym++) {
@@ -736,7 +736,7 @@ StreamSet * GrepEngine::grepPipeline(const std::unique_ptr<ProgramBuilder> & P, 
 }
 
 void GrepEngine::ztfGrepPipeline(const std::unique_ptr<ProgramBuilder> & P, StreamSet * const ByteStream, StreamSet * const decoded_stream) {
-    if (argv::FullyDecompressFlag) {
+    if (argv::FullyDecompressFlag || !(hasComponent(mExternalComponents, Component::WordOnlySubRE))) {
         //get fully decompressed byte stream
         getFullyDecompressedBytes(P, ByteStream, decoded_stream);
         mBinaryFilesMode = argv::Text;

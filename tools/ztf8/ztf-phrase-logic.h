@@ -127,11 +127,30 @@ public:
                          StreamSet * countStream,
                          StreamSet * basisUpdated,
                          StreamSet * matches = nullptr,
+                         StreamSet * segmentSpans = nullptr,
                          bool fullyDecompress = true);
 protected:
     void generatePabloMethod() override;
     EncodingInfo & mEncodingScheme;
     bool mFullyDecompress;
+};
+
+class DictionaryBoundary final: public pablo::PabloKernel {
+public:
+    DictionaryBoundary(BuilderRef b,
+                         EncodingInfo & encodingScheme,
+                         unsigned wordOnlyRELen,
+                         StreamSet * const basis,
+                         StreamSet * Results,
+                         StreamSet * dictStart,
+                         StreamSet * candidateMatchesNonFinal,
+                         StreamSet * candidateMatchesInDict,
+                         bool matchOnly = false);
+protected:
+    void generatePabloMethod() override;
+    EncodingInfo & mEncodingScheme;
+    bool mMatchOnly;
+    unsigned mCandidateMatchLen;
 };
 
 class codeword_index : public pablo::PabloKernel {
@@ -145,6 +164,7 @@ kernel::StreamSet * ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> & P,
                    EncodingInfo & encodingScheme,
                    StreamSet * const Basis,
                    StreamSet * const Results,
+                   unsigned wordOnlyRELen,
                    StreamSet * const hashtableMarks,
                    StreamSet * const decodedMarks,
                    StreamSet * filterSpan);
