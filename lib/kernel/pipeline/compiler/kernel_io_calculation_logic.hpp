@@ -137,9 +137,9 @@ void PipelineCompiler::determineNumOfLinearStrides(BuilderRef b) {
         }
     }
 
-    Value * numOfLinearStrides = nullptr;
     const auto isSourceKernel = in_degree(mKernelId, mBufferGraph) == 0;
 
+    Value * numOfLinearStrides = nullptr;
     if (mMayLoopToEntry) {
         if (mExecuteStridesIndividually) {
             Value * const anyMore = b->CreateICmpNE(mMaximumNumOfStrides, mCurrentNumOfStridesAtLoopEntryPhi);

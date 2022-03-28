@@ -108,7 +108,6 @@ inline void PipelineCompiler::executeKernel(BuilderRef b) {
         mIsBounded = isBounded();
         mHasExplicitFinalPartialStride = requiresExplicitFinalStride();
         mCheckInputChannels = false;
-        mMayLoopToEntry = false;
         for (const auto input : make_iterator_range(in_edges(mKernelId, mBufferGraph))) {
             const BufferPort & port = mBufferGraph[input];
             if (port.CanModifySegmentLength) {

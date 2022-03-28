@@ -56,31 +56,33 @@ protected:
     const unsigned mOffset;
 };
 
-// 1. select non-overlapping phrases of same length
-// 2. If any curLen phrase is overlapping prevSelected longer phrase, eliminate such phrase
-class OverlappingLengthGroupMarker final: public pablo::PabloKernel {
+class LengthBasedHashMarkSelection final: public pablo::PabloKernel {
 public:
-    OverlappingLengthGroupMarker(BuilderRef b,
-                 unsigned groupNo,
+    LengthBasedHashMarkSelection(BuilderRef b,
+                 EncodingInfo & encodingScheme,
+                 unsigned offset,
+                 unsigned currLen,
                  StreamSet * lengthwiseHashMarks,
-                 StreamSet * prevSelected,
                  StreamSet * selected);
 protected:
     void generatePabloMethod() override;
-    unsigned mGroupNo;
+    EncodingInfo & mEncodingScheme;
+    unsigned mOffset;
+    unsigned mCurrLen;
 };
 
-class OverlappingLookaheadMarker final: public pablo::PabloKernel {
+class OverlappingLookaheadMarkSelect final: public pablo::PabloKernel {
 public:
-    OverlappingLookaheadMarker(BuilderRef b,
-                 unsigned groupNo,
-                 StreamSet * groupLenBixnum,
-                 StreamSet * longerHashMarks,
-                 StreamSet * selectedPart1,
-                 StreamSet * selected);
+    OverlappingLookaheadMarkSelect(BuilderRef b,
+                 unsigned currLen,
+                 unsigned offset,
+                 StreamSet * lengthwiseHashMarks,
+                 StreamSet * lengthwiseHashMarksUpdates,
+                 StreamSet * selectedHashMarks);
 protected:
     void generatePabloMethod() override;
-    unsigned mGroupNo;
+    unsigned mCurrLen;
+    unsigned mOffset;
 };
 
 /*

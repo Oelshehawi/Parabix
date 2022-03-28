@@ -131,14 +131,13 @@ Build steps are the same as mentioned in the README of the Parabix home page.
 To run the ztf-phrase-hash application, follow the below steps.
 
 
-1. Compression: currently works only in single-threaded mode. We are writing the hashtable and the compressed data in 2 separate files `ztf-phrase-hash.z` and `hashtable.z` respectively.
+1. Compression: We are writing the hashtable and the compressed data in compressed.z, where the dictionary of each segment is followed by the compressed data for the corresponding segment in an interleaved fashion.
 
-`bin/ztf-phrase-hash <input_file> 1>> ztf-phrase-hash.z 2>> hashtable.z -thread-num=1`
+`bin/ztf-phrase-hash <input_file> > compressed.z`
 
-2. The final compressed output is the concatenation of hashtable and compressed data separated by a unique boundary value. The final compressed file is named `finalCompressed.z`
+2. Decompression: takes in the hashtable and the compressed data. Creates the hashtable first for each segment and then replaces the codeword in the compressed data referring to the hashtable entries.
 
-`python3 ../tools/ztf8/scripts/writeBoundaryByte.py`
-`python3 ../tools/ztf8/scripts/mergeFiles.py`
+`bin/ztf-phrase-hash -d compressed.z > decompressed`
 
 3. Decompression: takes in the hashtable and the compressed data. Creates the hashtable first and then replaces the codeword in the compressed data referring to the hashtable entries. `decompressed` contains the hashtable in the preamble of the file and the uncompressed data in the subsequent part of the output file.
 
