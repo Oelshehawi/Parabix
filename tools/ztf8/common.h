@@ -36,6 +36,8 @@ struct LengthGroupParameters {
     unsigned const groupHalfLength;
     Type * halfLengthTy;
     Type * halfSymPtrTy;
+    Type * symLengthTy;
+    Type * symLengthPtrTy;
     Constant * HALF_LENGTH;
     Constant * LO;
     Constant * HI;

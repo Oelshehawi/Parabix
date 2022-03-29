@@ -51,6 +51,8 @@ LengthGroupParameters::LengthGroupParameters(BuilderRef b, EncodingInfo encoding
     groupHalfLength(1UL << boost::intrusive::detail::floor_log2(groupInfo.lo)),
     halfLengthTy(b->getIntNTy(8U * groupHalfLength)),
     halfSymPtrTy(halfLengthTy->getPointerTo()),
+    symLengthTy(b->getIntNTy(8U * (1UL << groupInfo.hi))),
+    symLengthPtrTy(symLengthTy->getPointerTo()),
     HALF_LENGTH(b->getSize(groupHalfLength)),
     LO(b->getSize(groupInfo.lo)),
     HI(b->getSize(groupInfo.hi)),
