@@ -71,7 +71,11 @@ public:
     WordCharacterValidator(): RE_Validator("WordCharacterValidator"),
     mPropObj(UCD::get_WORD_PropertyObject()),
     mWordOnlySet(mPropObj->GetCodepointSet("Yes")),
-    mCurSubRegexLen(0), mMaxSubRegexLen(0), mAllWordChars(true)
+    mCurSubRegexLen(0),
+    mMaxSubRegexLen(0),
+    mAllWordChars(true),
+    mWordCCCount(0),
+    mSubExpression(makeSeq())
     { }
 
     bool validateCC(const CC * cc) override {
@@ -79,18 +83,31 @@ public:
         for (const auto range : *cc) {
             const auto lo = re::lo_codepoint(range);
             const auto hi = re::hi_codepoint(range);
-            mCurSubRegexLen += (hi-lo) + 1;
             if (!mWordOnlySet.contains(hi) || !mWordOnlySet.contains(lo)) {
                 mAllWordChars = false;
-                mMaxSubRegexLen = std::max(mMaxSubRegexLen, mCurSubRegexLen);
-                mCurSubRegexLen = 0;
+            }
+            else {
+                mWordCCCount++;
             }
         }
-        mMaxSubRegexLen = std::max(mMaxSubRegexLen, mCurSubRegexLen);
         return mAllWordChars;
     }
 
-    // TODO: update mMaxSubRegexLen for alternations and repeatations
+    bool validateSeq(const Seq * seq) override { // seq "bed coffee"
+        mWordCCCount = 0;
+        for (RE * e : *seq) {
+            validateRE(e);
+        }
+        return (mWordCCCount != 0);
+    }
+
+    bool validateAlt(const Alt * alt) override {
+        mWordCCCount = 0;
+        for (RE * e : *alt) {
+            validateRE(e);
+        }
+        return (mWordCCCount != 0);
+    }
 
     unsigned getMaxSubRegexLen() {
         return mMaxSubRegexLen;
@@ -101,15 +118,13 @@ private:
     unsigned mCurSubRegexLen;
     unsigned mMaxSubRegexLen;
     bool mAllWordChars;
-
+    unsigned mWordCCCount;
+    RE * mSubExpression;
 };
 
-unsigned getWordCharactersOnlySubRELen(const RE * re) {
+bool wordCharsExist(const RE * re) {
     WordCharacterValidator v;
-    if (v.validateRE(re)) {
-        return v.getMaxSubRegexLen();
-    }
-    return 0;
+    return v.validateRE(re);
 }
 
 class NonUnicodeValidator : public RE_Validator {

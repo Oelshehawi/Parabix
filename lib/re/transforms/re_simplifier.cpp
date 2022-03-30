@@ -103,4 +103,40 @@ RE * removeUnneededCaptures(RE * r) {
     ReferenceCollector(refs).inspectRE(r);
     return UnneededCaptureRemoval(refs).transformRE(r);
 }
+
+struct RE_Preprocessor final : public RE_Transformer {
+
+    RE * transformCapture(Capture * c) override {
+        // replace capture + back-reference by 2 capture groups
+        RE * const captured = c->getCapturedRE();
+        RE * t = transform(captured);
+        if (t == captured) return c;
+        return makeCapture(c->getName(), t);
+    }
+
+    RE * transformReference(Reference * r) override {
+        // if followed by a capture group, replace reference by capture group
+        return r;
+    }
+
+    RE * transformStart(Start * s) override {
+        return makeEmptySet();
+    }
+
+    RE * transformEnd(End * e) override {
+        return makeSeq();
+    }
+
+    RE * transformAssertion(Assertion * a) override {
+        // ignore all assertions
+        return makeSeq({a->getAsserted()});
+    }
+
+    RE_Preprocessor() : RE_Transformer("Preprocessor") { }
+
+};
+
+RE * transformToWordOnlyRE(RE * re) {
+    return RE_Preprocessor().transformRE(re);
+}
 }

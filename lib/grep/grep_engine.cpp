@@ -296,6 +296,21 @@ void GrepEngine::initRE(re::RE * re) {
     mRE = resolveAnchors(mRE, anchorRE);
     mRE = regular_expression_passes(mRE);
     mRE = name_variable_length_CCs(mRE);
+    mSubExpression = mRE;
+/*
+regex cases for ztf-grep:
+Preprocess:
+1. If there's capturing group with quantifier, eliminate it. Ex: Set(Value)? the capturing group in with quantifier (Value)? can be ignored for sub-expression.
+Refer (self): If you do not need the group to capture its match, you can optimize this regular expression into Set(?:Value)?. 
+The question mark and the colon after the opening parenthesis are the syntax that creates a non-capturing group.
+2. Capturing groups make it easy to extract part of the regex match. Keep these in the sub-expression
+Ref self: https://stackoverflow.com/questions/2973436/regex-lookahead-lookbehind-and-atomic-groups
+4. Negated character class?
+5. For capture group followed by a back reference, replace it by 2 consecutive capture groups.
+6. Ignore all assertions as they just limit the matches and not actually the part of the macthes.
+Ref self: https://www.geeksforgeeks.org/perl-assertions-in-regex/
+*/
+
     if (hasGraphemeClusterBoundary(mRE)) {
         UnicodeIndexing = true;
         setComponent(mExternalComponents, Component::GraphemeClusterBoundary);
@@ -310,11 +325,23 @@ void GrepEngine::initRE(re::RE * re) {
             UnicodeIndexing = true;
         }
     }
-    mWordOnlySubRegexLen = getWordCharactersOnlySubRELen(mRE);
-    if (mWordOnlySubRegexLen > 0) {
-        setComponent(mExternalComponents, Component::WordOnlySubRE);
-    }
+    // if (mBinaryFilesMode == argv::ZTFCompressed) {
+        mSubExpression = preprocess_RE(mRE);
+        // first validate the mSubExpression to be valid for transformation
+        if (wordCharsExist(mSubExpression)) {
+            // llvm::errs() << "mSubExpression contains word chars" << "\n";
+            auto m = makeWordOnlySubExpression(mSubExpression, UnicodeIndexing);
+            mSubExpression = m.first;
+            mWordOnlySubRegexLen = m.second;
+            // errs() << "mSubExpression " << Printer_RE::PrintRE(mSubExpression) << '\n';
+            // errs() << "mWordOnlySubRegexLen " << mWordOnlySubRegexLen << '\n';
+        }
 
+        // mWordOnlySubRegexLen = getWordCharactersOnlySubRELen(mRE);
+        if (mWordOnlySubRegexLen > 0) {
+            setComponent(mExternalComponents, Component::WordOnlySubRE);
+        }
+    // }
     if (UnicodeIndexing) {
         setComponent(mExternalComponents, Component::S2P);
         setComponent(mExternalComponents, Component::UTF8index);
@@ -617,7 +644,7 @@ void GrepEngine::U8indexedGrep(const std::unique_ptr<ProgramBuilder> & P, re::RE
 
 void GrepEngine::ZTFPreliminaryGrep(const std::unique_ptr<ProgramBuilder> & P, re::RE * re, StreamSet * Source, StreamSet * Results) {
     StreamSet * SourceStream = getBasis(P, Source);
-    // add the Unicode grep and U8indexedGrep logic as per the RE properties
+    /// TODO: add the Unicode grep and U8indexedGrep logic as per the RE properties
     std::unique_ptr<kernel::GrepKernelOptions> options;
     std::pair<int, int> lengths;
     if (UnicodeIndexing) {

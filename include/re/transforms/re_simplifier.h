@@ -17,6 +17,8 @@ RE * simplifyRE(RE * re);
 
 RE * removeUnneededCaptures(RE * r);
 
+RE * transformToWordOnlyRE(RE * re);
+
 }
 
 #endif // RE_SIMPLIFIER_H

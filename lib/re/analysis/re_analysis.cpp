@@ -13,6 +13,8 @@
 #include <unicode/utf/UTF.h>
 
 #include <util/small_flat_set.hpp>
+#include <unicode/data/PropertyObjects.h>
+#include <unicode/data/PropertyObjectTable.h>
 
 using namespace llvm;
 
@@ -582,5 +584,122 @@ bool DefiniteLengthBackReferencesOnly(const RE * re) {
     }
     return true; // otherwise = CC, Any, Start, End, Range
 }
+
+struct SubExpressionTransformer final : public RE_Transformer {
+    RE * transformCC(CC * cc) override {
+        for (const auto range : *cc) {
+            const auto lo = re::lo_codepoint(range);
+            const auto hi = re::hi_codepoint(range);
+            if (mNonWordOnlySet.intersects(lo, hi)) mNonWordFound = true;
+            // else mMaxSubRegexLen++;
+        }
+        return cc;
+    }
+
+    RE * transformSeq(Seq * seq) override { // seq "bed coffee" => returns coffee
+        // errs() << "transformSeq " << Printer_RE::PrintRE(seq) << '\n';
+        SmallVector<RE *, 16> elems;
+        bool any_changed = false;
+        mMaxSubRegexLen = 0;
+        for (RE * e : *seq) {
+            mNonWordFound = false;
+            RE * e1 = transform(e);
+            if (e1 != e) any_changed = true;
+            if (mNonWordFound) {
+                if (elems.size() > mMaxSubRegexLen) {
+                    mMaxSubRegexLen = elems.size();
+                    allSubExprLen.push_back(mMaxSubRegexLen);
+                    mSubExpression = makeSeq(elems.begin(), elems.end());
+                    // errs() << "mSubExpression non-final " << Printer_RE::PrintRE(mSubExpression) << '\n';
+                    elems.clear();
+                }
+            }
+            else {
+                elems.push_back(e1);
+            }
+        }
+        // check the remaining CC in the list
+        if (elems.size() > mMaxSubRegexLen) {
+            mMaxSubRegexLen = elems.size();
+            allSubExprLen.push_back(mMaxSubRegexLen);
+            mSubExpression = makeSeq(elems.begin(), elems.end());
+            elems.clear();
+        }
+        // errs() << "mSubExpression final seq " << Printer_RE::PrintRE(mSubExpression) << '\n';
+        return mSubExpression;
+    }
+
+    RE * transformAlt(Alt * alt) override { // ^foreach|^for|^while => foreach|for|while
+        // errs() << "transformAlt " << Printer_RE::PrintRE(alt) << '\n';
+        // maximize the length of each assertion sub-expression
+        SmallVector<RE *, 16> elems; // vector of alternations
+        elems.reserve(alt->size());
+        bool any_changed = false;
+        for (RE * e : *alt) {
+            mMaxSubRegexLen = 0;
+            RE * e1 = transform(e);
+            allSubExprLen.push_back(mMaxSubRegexLen);
+            if (e1 != e) any_changed = true;
+            elems.push_back(e1);
+        }
+        mSubExpression = makeAlt(elems.begin(), elems.end());
+        // errs() << "mSubExpression alt " << Printer_RE::PrintRE(makeAlt(elems.begin(), elems.end())) << '\n';
+        if (!any_changed) return alt;
+        return mSubExpression;
+    }
+
+    RE * transformRep(Rep * r) override {
+        // sub-expr length is upper bounded by sequence lower-bound
+        RE * x0 = r->getRE();
+        RE * x = transform(x0);
+        mSubExpression = makeRep(x, r->getLB(), r->getLB());
+        // errs() << "mSubExpression rep " << Printer_RE::PrintRE(mSubExpression) << '\n';
+        return mSubExpression;
+    }
+
+    unsigned getSubRegexLen() {
+        return allSubExprLen[0];
+    }
+
+    RE * getSubExpression() {
+        return mSubExpression;
+    }
+
+    SubExpressionTransformer(bool indexing): RE_Transformer("SubExpressionTransformer"),
+    mPropObj(UCD::get_WORD_PropertyObject()),
+    mNonWordOnlySet(mPropObj->GetCodepointSet("No")),
+    mIndexing(indexing),
+    mIndexingAlphabet(&cc::UTF8),
+    mNonWordFound(false),
+    mMaxSubRegexLen(0)
+    { 
+        if(mIndexing) {
+            mIndexingAlphabet = &cc::Unicode;
+        }
+    }
+private:
+    UCD::PropertyObject * mPropObj;
+    UCD::UnicodeSet mNonWordOnlySet;
+    bool mIndexing;
+    const cc::Alphabet * mIndexingAlphabet;
+    bool mNonWordFound;
+    unsigned mMaxSubRegexLen;
+    std::vector<unsigned> allSubExprLen;
+    RE * mSubExpression;
+};
+
+std::pair<RE *, unsigned> makeWordOnlySubExpression(RE * r, bool UnicodeIndexing) {
+    errs() << "original RE " << Printer_RE::PrintRE(r) << '\n';
+    SubExpressionTransformer s(UnicodeIndexing);
+    return std::make_pair(s.transformRE(r), s.getSubRegexLen());
+}
+
+/*
+Seq: get the longest sub-expr with all wordOnly CC
+Rep: get the longest sub-expr with all wordOnly CC bound by lower-bound of Rep
+Alt: if all the alternations contain some wordOnly CC, 
+     transform it to an Alt of sub-expressions with wordChar only
+*/
+
 
 }

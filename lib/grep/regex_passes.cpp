@@ -92,4 +92,10 @@ RE * regular_expression_passes(RE * re) {
     return r;
 }
 
+RE * preprocess_RE(RE * re) {
+    RE * r = re;
+    r = transformToWordOnlyRE(r);
+    return r;
+}
+
 } // namespace re

@@ -182,6 +182,7 @@ protected:
     GrepRecordBreakKind mGrepRecordBreak;
 
     re:: RE * mRE;
+    re:: RE * mSubExpression;
     std::set<re::Name *> mExternalNames;
     re::CC * mBreakCC;
     re::RE * mPrefixRE;

@@ -18,4 +18,6 @@ RE * remove_nullable_ends(RE * r);
 
 RE * regular_expression_passes(RE * r);
 
+RE * preprocess_RE(RE * r);
+
 }

@@ -42,6 +42,8 @@ bool hasEndAnchor(const RE * r);
     
 bool DefiniteLengthBackReferencesOnly(const RE * re);
     
+std::pair<RE *, unsigned> makeWordOnlySubExpression(RE * r, bool UnicodeIndexing);
+
 }
 
 #endif // RE_ANALYSIS_H
