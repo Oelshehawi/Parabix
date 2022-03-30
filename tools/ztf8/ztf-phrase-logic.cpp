@@ -5,6 +5,8 @@
  */
 
 #include "ztf-phrase-logic.h"
+#include "ztf-phrase-scan.h"
+
 #include <re/adt/re_name.h>
 #include <re/adt/re_re.h>
 #include <pablo/bixnum/bixnum.h>
@@ -23,6 +25,7 @@
 #include <kernel/util/debug_display.h>
 #include <grep/grep_kernel.h>
 #include <kernel/streamutils/deletion.h>
+#include <kernel/streamutils/streams_merge.h>
 #include <kernel/util/linebreak_kernel.h>
 
 using namespace pablo;
@@ -392,7 +395,7 @@ std::vector<unsigned> getPrefixForGroupLength(EncodingInfo & encodingScheme, uns
     // }
     return prefixes;
 }
-DictionaryBoundary::DictionaryBoundary(BuilderRef kb,
+ProcessCandidateMatches::ProcessCandidateMatches(BuilderRef kb,
                 EncodingInfo & encodingScheme,
                 unsigned wordOnlyRELen,
                 StreamSet * basis,
@@ -400,20 +403,24 @@ DictionaryBoundary::DictionaryBoundary(BuilderRef kb,
                 StreamSet * dictStart,
                 StreamSet * candidateMatchesNonFinal,
                 StreamSet * candidateMatchesInDict,
+                StreamSet * groupStreams,
                 bool matchOnly)
-: PabloKernel(kb, "DictionaryBoundary_" + std::to_string(matchOnly) + "_" + std::to_string(wordOnlyRELen),
+: PabloKernel(kb, "ProcessCandidateMatches_" + std::to_string(matchOnly) + "_" + std::to_string(wordOnlyRELen),
             {Binding{"basis", basis, FixedRate(), LookAhead(encodingScheme.maxEncodingBytes() - 1)},
              Binding{"results", results, FixedRate(), LookAhead(1)}},
             {Binding{"dictStart", dictStart, FixedRate(), Add1()},
              Binding{"candidateMatchesNonFinal", candidateMatchesNonFinal, FixedRate(), Add1()},
-             Binding{"candidateMatchesInDict", candidateMatchesInDict, FixedRate(), Add1()}}),
+             Binding{"candidateMatchesInDict", candidateMatchesInDict, FixedRate(), Add1()},
+             Binding{"groupStreams", groupStreams, FixedRate(), Add1()}}),
 mEncodingScheme(encodingScheme), mMatchOnly(matchOnly), mCandidateMatchLen(wordOnlyRELen) { }
 
-void DictionaryBoundary::generatePabloMethod() {
+void ProcessCandidateMatches::generatePabloMethod() {
     PabloBuilder pb(getEntryScope());
     BixNumCompiler bnc(pb);
     std::vector<PabloAST *> basis = getInputStreamSet("basis");
     PabloAST * results = getInputStreamSet("results")[0];
+    std::vector<PabloAST *> groupStreams(mEncodingScheme.byLength.size());
+
     // Almost done except the prefix byte: eliminate matches that have codeword suffix as match start pos
     PabloAST * candidateMatchStart = results;
     if (!mMatchOnly) {
@@ -438,12 +445,17 @@ void DictionaryBoundary::generatePabloMethod() {
     PabloAST * toEliminate = pb.createAnd(pb.createLookahead(basis[7], 1), pb.createOr(hashTableBoundaryStart, hashTableBoundaryEnd));
     hashTableSpan = pb.createOr3(hashTableSpan, hashTableBoundaryEndFinal, toEliminate);
 
+    PabloAST * boundaryEndInvalidCodeword = pb.createAdvance(hashTableBoundaryEndFinal, 3);
+    PabloAST * boundaryStartInvalidCodeword = pb.createAdvance(hashTableBoundaryStartFinal, 3);
+    PabloAST * allInvalidBoundaryCodeword = pb.createNot(pb.createOr(boundaryEndInvalidCodeword, boundaryStartInvalidCodeword));
+
+    PabloAST * allGroupStream = pb.createZeroes();
     PabloAST * ASCII = bnc.ULT(basis, 0x80);
     PabloAST * suffix_80_BF = pb.createAnd(bnc.UGE(basis, 0x80), bnc.ULE(basis, 0xBF));
     /// CHECK: Can be optional for now: (but might turn out to be an optimization technique) 
     /// CHECK: if any codeword byte position collides with candidateMatchStart pos, eliminate that candidateMatchStart bit
     for (unsigned i = 0; i < mEncodingScheme.byLength.size(); i++) {
-        PabloAST * groupStream = pb.createZeroes();
+        groupStreams[i] = pb.createZeroes();
         LengthGroupInfo groupInfo = mEncodingScheme.byLength[i];
         unsigned lo = groupInfo.lo;
         unsigned hi = groupInfo.hi;
@@ -467,55 +479,54 @@ void DictionaryBoundary::generatePabloMethod() {
 
         PabloAST * inGroup = pb.createAnd(bnc.UGE(basis, base), bnc.ULT(basis, next_base));
         /// CHECK: eliminate any codeword prefix in dictionary matched incorrectly 
-        /* codeword bytes -> codeword range
-            2 -> C0-C7 00-7F
-            2 -> C8-CF 00-7F
-            2 -> D0-DF 00-7F
-            3 -> E0-EF 00-7F 00-7F / EO-EF 00-7F 80-BF
-            4 -> F0-FF 00-7F 00-7F 00-7F / F0-FF 00-7F 00-7F 80-BF
-        */
         PabloAST * curGroupStream = pb.createAnd(pb.createAdvance(inGroup, 1), ASCII); // PFX 00-7F
         candidateMatchStart = pb.createAnd(pb.createNot(curGroupStream), candidateMatchStart);
-        groupStream = curGroupStream;
+        groupStreams[i] = curGroupStream;
 
         for (unsigned j = 2; j < groupInfo.encoding_bytes; j++) {
-            groupStream = pb.createAnd(pb.createAdvance(groupStream, 1), ASCII);
+            groupStreams[i] = pb.createAnd(pb.createAdvance(groupStreams[i], 1), ASCII);
             // eliminate any candidate match start position that is a codeword suffix byte
-            candidateMatchStart = pb.createAnd(pb.createNot(groupStream), candidateMatchStart);
+            candidateMatchStart = pb.createAnd(pb.createNot(groupStreams[i]), candidateMatchStart);
             if (j+1 == groupInfo.encoding_bytes) {
                 // PFX 00-7F{1,2} 80-BF
+                unsigned idx = i+mEncodingScheme.byLength.size();
                 curGroupStream = pb.createAnd(pb.createAdvance(curGroupStream, groupInfo.encoding_bytes-2), suffix_80_BF);
+                if (idx == 9) {
+                    curGroupStream = pb.createAnd(curGroupStream, allInvalidBoundaryCodeword);
+                }
                 candidateMatchStart = pb.createAnd(pb.createNot(curGroupStream), candidateMatchStart); // can-skip: no valid character starts with suffix_80_BF 
             }
-            groupStream = curGroupStream;
+            groupStreams[i] = curGroupStream;
         }
-        // if(i == 4 || i == 9) { // boundary bytes should not be treated as valid 4-byte codewords
-        //     groupStream = pb.createAnd(groupStream, allInvalidBoundaryCodeword);
-        // }
+        if(i == 4 || i == 9) {
+            groupStreams[i] = pb.createAnd(groupStreams[i], allInvalidBoundaryCodeword);
+        }
 
-        // Attempt 1: to get moreCandidateMatches
-        // for current LG, if candidateMatchStart pos is not a codeword AND is in dictionary span
-        // PabloAST * const matchesInDictionary = pb.createAnd(candidateMatchStart, /*a span of all the phrases in the length group*/);
-        // if candidateMatchStart has a 1-bit anywhere in the stream, retain all the curGroupStream markers
-        // Var * moreCandidateMatches = pb.createVar("codewordMatches", pb.createZeroes());
-        // auto itHasMatch = pb.createScope();
-        // pb.createIf(matchesInDictionary, itHasMatch);
-        // {   // mark the codewords in this length-group as candidate matches
-        //     // even a single bit in the segment is enough to decompress the span? -> but this is being done to precisely identify the
-        //     // LG corresponding to the candidate matches
-        //     itHasMatch.createAssign(moreCandidateMatches, pb.createAnd(groupStream, pb.createNot(hashTableSpan)));
-        // }
+        allGroupStream = pb.createOr(allGroupStream, pb.createAnd(hashTableSpan, groupStreams[i]));
     }
 
+    // groupStream marks the suffix byte of the codeword of current length-group
+    // candidateMatchStart marks the match start pos of current length-group (ideally marks the phrases)
+    // advance candidateMatchStart until it coincides with groupStream marker for that phrase
+    // allGroupStream has a codeword marker for every phrase. No candidate mark will move past its codeword last byte
+    PabloAST * movedCandidateMatches = pb.createZeroes();
+    for (unsigned i = 2; i < mEncodingScheme.maxSymbolLength(); i++) {
+        candidateMatchStart = pb.createAdvance(candidateMatchStart, 1);
+        movedCandidateMatches = pb.createOr(movedCandidateMatches, pb.createAnd(candidateMatchStart, allGroupStream));
+        candidateMatchStart = pb.createXor(candidateMatchStart, allGroupStream);
+    }
+
+    Var * matchesVar = getOutputStreamVar("candidateMatchesInDict");
+    for (unsigned i = 0; i < mEncodingScheme.byLength.size(); i++) {
+        pb.createAssign(pb.createExtract(matchesVar, pb.getInteger(i)), pb.createAnd3(hashTableSpan, groupStreams[i], candidateMatchStart));
+        pb.createAssign(pb.createExtract(getOutputStreamVar("groupStreams"), pb.getInteger(i)), pb.createAnd(groupStreams[i], pb.createNot(hashTableSpan)));
+    }
     // pb.createDebugPrint(pb.createCount(hashTableBoundaryStartFinal), "hashTableBoundaryStartFinal");
     // pb.createDebugPrint(pb.createCount(hashTableBoundaryEndFinal), "hashTableBoundaryEndFinal");
     // pb.createDebugPrint(hashTableBoundaryStartFinal, "hashTableBoundaryStartFinal");
     pb.createAssign(pb.createExtract(getOutputStreamVar("dictStart"), pb.getInteger(0)), hashTableBoundaryStartFinal);
     // Results after eliminating invalid candidate matches in the dictionary
-    pb.createAssign(pb.createExtract(getOutputStreamVar("candidateMatchesNonFinal"), pb.getInteger(0)), candidateMatchStart);
-    pb.createAssign(pb.createExtract(getOutputStreamVar("candidateMatchesInDict"), pb.getInteger(0)), pb.createAnd(hashTableSpan, candidateMatchStart));
-    // pb.createAssign(pb.createExtract(getOutputStreamVar("dictEnd"), pb.getInteger(0)), hashTableBoundaryEndFinal);
-
+    pb.createAssign(pb.createExtract(getOutputStreamVar("candidateMatchesNonFinal"), pb.getInteger(0)), candidateMatchStart); // candidate marks in dict awa compressed data part
 }
 
 Bindings ZTF_PhraseExpansionDecoderInputBindings(EncodingInfo & encodingScheme, StreamSet * basis, StreamSet * matches, StreamSet * segmentSpans) {
@@ -610,7 +621,6 @@ void ZTF_PhraseExpansionDecoder::generatePabloMethod() {
         BixNum toInsert(5, pb.createZeroes());
         LengthGroupInfo groupInfo = mEncodingScheme.byLength[i];
         unsigned lo = groupInfo.lo;
-        unsigned hi = groupInfo.hi;
         unsigned base = groupInfo.prefix_base;
         unsigned next_base;
         PabloAST * inGroup = pb.createZeroes();
@@ -682,18 +692,38 @@ kernel::StreamSet * kernel::ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> 
 // NOTE: The grep output requires complete lines to be printed as output;
     //   and lines may be divided across multiple segments.
     StreamSet * const dictStart = P->CreateStreamSet(1);
+    StreamSet * const candidateMatchesInDict = P->CreateStreamSet(5);
+    StreamSet * const groupStreams = P->CreateStreamSet(5);
     StreamSet * const candidateMatchesNonFinal = P->CreateStreamSet(1);
-    StreamSet * const candidateMatchesInDict = P->CreateStreamSet(1);
+/*
+    1. eliminate all the invalid matches in dictionary. (matches that start from codeword pfx/sfx bytes)
+    2. finalize the candidate matches: mark the codewords corresponding to the phrases with candidate matches.
+        i. for every match in dictionary, move the match pos to the last byte of phrase. Assign to streams of different length groups.
+       ii. parse the compressed data, create a hashtabke of the codewords with candidate matches.
+      iii. mark the codewords which have a hashtable entry.
+*/
     /// WIP: Update results to remove any invalid matches in the dictionary (all done except pfx byte)
-    P->CreateKernelCall<DictionaryBoundary>(encodingScheme, wordOnlyRELen, Basis, Results, dictStart, candidateMatchesNonFinal, candidateMatchesInDict); // add 1-bit at the end of dictEnd stream
+    P->CreateKernelCall<ProcessCandidateMatches>(encodingScheme, wordOnlyRELen, Basis, Results, dictStart, candidateMatchesNonFinal, candidateMatchesInDict, groupStreams); // add 1-bit at the end of dictEnd stream
+
+    StreamSet * const basis_bytes = P->CreateStreamSet(1, 8);
+    P->CreateKernelCall<P2SKernel>(Basis, basis_bytes);
+    std::vector<StreamSet *> candidateMatchMarks;
+    for (unsigned i = 0; i < encodingScheme.byLength.size(); i++) {
+        StreamSet * const groupMatchMarks = P->CreateStreamSet(1);
+        P->CreateKernelCall<StreamSelect>(groupMatchMarks, Select(candidateMatchesInDict, {i}));
+        StreamSet * const groupCodewordMarks = P->CreateStreamSet(1);
+        P->CreateKernelCall<StreamSelect>(groupCodewordMarks, Select(groupStreams, {i}));
+        StreamSet * const groupCandidateMatchMarks = P->CreateStreamSet(1);
+        // LLVM kernel to mark all the codewords corresponding to candidate matches; length-wise processed
+        P->CreateKernelCall<FinalizeCandidateMatches>(encodingScheme, i, basis_bytes, groupMatchMarks, groupCodewordMarks, groupCandidateMatchMarks);
+        candidateMatchMarks.push_back(groupMatchMarks);
+    }
+    candidateMatchMarks.push_back(candidateMatchesNonFinal);
     StreamSet * const candidateMatchesFinal = P->CreateStreamSet(1);
-    /// CHECK: Probable optimization: LLVM kernel to mark all the codewords that are marked for candidate matches
-    // StreamSet * const basis_bytes = P->CreateStreamSet(1, 8);
-    // P->CreateKernelCall<P2SKernel>(Basis, basis_bytes);
-    // P->CreateKernelCall<FinalizeCandidateMatches>(encodingScheme, basis_bytes, candidateMatchesInDict, candidateMatchesFinal);
+    P->CreateKernelCall<StreamsMerge>(candidateMatchMarks, candidateMatchesFinal);
 
     StreamSet * const MatchedSegmentEnds = P->CreateStreamSet();
-    P->CreateKernelCall<MatchedLinesKernel>(/*candidateMatchesFinal*/candidateMatchesNonFinal, dictStart, MatchedSegmentEnds);
+    P->CreateKernelCall<MatchedLinesKernel>(candidateMatchesFinal, dictStart, MatchedSegmentEnds);
     StreamSet * MatchesBySegment = P->CreateStreamSet(1, 1);
     // 1-bit per segment indicating presense of candidate matches in the segment
     FilterByMask(P, dictStart, MatchedSegmentEnds, MatchesBySegment);

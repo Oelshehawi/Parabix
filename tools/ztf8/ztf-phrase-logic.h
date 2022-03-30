@@ -137,9 +137,9 @@ protected:
     bool mFullyDecompress;
 };
 
-class DictionaryBoundary final: public pablo::PabloKernel {
+class ProcessCandidateMatches final: public pablo::PabloKernel {
 public:
-    DictionaryBoundary(BuilderRef b,
+    ProcessCandidateMatches(BuilderRef b,
                          EncodingInfo & encodingScheme,
                          unsigned wordOnlyRELen,
                          StreamSet * const basis,
@@ -147,6 +147,7 @@ public:
                          StreamSet * dictStart,
                          StreamSet * candidateMatchesNonFinal,
                          StreamSet * candidateMatchesInDict,
+                         StreamSet * groupStreams,
                          bool matchOnly = false);
 protected:
     void generatePabloMethod() override;

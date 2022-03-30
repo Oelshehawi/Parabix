@@ -12,6 +12,24 @@
 
 namespace kernel {
 
+class FinalizeCandidateMatches final : public MultiBlockKernel {
+public:
+    FinalizeCandidateMatches(BuilderRef b,
+                           EncodingInfo encodingScheme,
+                           unsigned groupNo,
+                           StreamSet * const byteData,
+                           StreamSet * codewordEndMarks,
+                           StreamSet * groupCodewordMarks,
+                           StreamSet * candidateMatchMarks,
+                           unsigned strideBlocks = 8);
+private:
+    void generateMultiBlockLogic(BuilderRef iBuilder, llvm::Value * const numOfStrides) override;
+
+    const EncodingInfo mEncodingScheme;
+    const unsigned mGroupNo;
+};
+
+
 class MarkRepeatedHashvalue final : public MultiBlockKernel {
 public:
     MarkRepeatedHashvalue(BuilderRef b,
@@ -22,9 +40,7 @@ public:
                            StreamSet * symEndMarks,
                            StreamSet * const hashValues,
                            StreamSet * const byteData,
-                           StreamSet * hashMarks,/*
-                           StreamSet * dictMask,
-                           StreamSet * dictPhraseMask,*/
+                           StreamSet * hashMarks,
                            unsigned strideBlocks = 8);
 private:
     void generateMultiBlockLogic(BuilderRef iBuilder, llvm::Value * const numOfStrides) override;
@@ -59,7 +75,6 @@ private:
     const unsigned mGroupNo;
     const unsigned mNumSym;
     const unsigned mSubStride;
-    const unsigned mPlen;
     const unsigned mOffset;
 };
 
@@ -76,7 +91,6 @@ public:
                     unsigned strideBlocks = 8);
 private:
     void generateMultiBlockLogic(BuilderRef iBuilder, llvm::Value * const numOfStrides) override;
-    const unsigned mNumSym;
     const unsigned mSubStride;
 };
 
@@ -98,8 +112,6 @@ private:
     void generateMultiBlockLogic(BuilderRef iBuilder, llvm::Value * const numOfStrides) override;
     const unsigned mNumSym;
     const unsigned mSubStride;
-    const unsigned mPlen;
-    const unsigned mOffset;
 };
 
 class InterleaveCompressionSegment final : public MultiBlockKernel {
@@ -112,7 +124,6 @@ public:
                            unsigned strideBlocks = 8);
 private:
     void generateMultiBlockLogic(BuilderRef iBuilder, llvm::Value * const numOfStrides) override;
-    unsigned mStrideBlocks;
 };
 
 class SymbolGroupDecompression final : public MultiBlockKernel {
@@ -131,7 +142,6 @@ private:
 
     const EncodingInfo mEncodingScheme;
     const unsigned mGroupNo;
-    const unsigned mNumSym;
 };
 
 }

@@ -102,6 +102,12 @@ void initializeDecompressionMasks(Kernel::BuilderRef b,
                                                     std::vector<Value *> & keyMasks,
                                                     std::vector<Value *> & hashMasks,
                                                     llvm::BasicBlock * strideMasksReady);
+void initializeOutputMasks(BuilderRef b,
+                           ScanWordParameters & sw,
+                           Constant * sz_BLOCKS_PER_STRIDE,
+                           Value * strideBlockOffset,
+                           Value * outputMaskPtr,
+                           BasicBlock * outputMasksReady);
 bool LLVM_READONLY DeferredAttributeIsSet();
 bool LLVM_READONLY DelayedAttributeIsSet();
 bool LLVM_READONLY PrefixCheckIsSet();

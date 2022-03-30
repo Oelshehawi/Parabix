@@ -320,3 +320,26 @@ void initializeDecompressionMasks(BuilderRef b,
     // Default initial compression mask is all ones (no zeroes => no compression).
     b->CreateCondBr(b->CreateICmpNE(nextBlockNo, sz_BLOCKS_PER_STRIDE), maskInitialization, strideMasksReady);
 }
+
+void initializeOutputMasks(BuilderRef b,
+                           ScanWordParameters & sw,
+                           Constant * sz_BLOCKS_PER_STRIDE,
+                           Value * strideBlockOffset,
+                           Value * outputMaskPtr,
+                           BasicBlock * outputMasksReady) {
+    Constant * sz_ZERO = b->getSize(0);
+    Constant * sz_ONE = b->getSize(1);
+    Type * sizeTy = b->getSizeTy();
+    BasicBlock * const entryBlock = b->GetInsertBlock();
+    BasicBlock * const maskInit = b->CreateBasicBlock("maskInit");
+    b->CreateBr(maskInit);
+
+    b->SetInsertPoint(maskInit);
+    PHINode * const blockNo = b->CreatePHI(sizeTy, 2);
+    blockNo->addIncoming(sz_ZERO, entryBlock);
+    Value * strideBlockIndex = b->CreateAdd(strideBlockOffset, blockNo);
+    b->CreateBlockAlignedStore(b->allZeroes(), b->CreateGEP(outputMaskPtr, strideBlockIndex));
+    Value * const nextBlockNo = b->CreateAdd(blockNo, sz_ONE);
+    blockNo->addIncoming(nextBlockNo, maskInit);
+    b->CreateCondBr(b->CreateICmpNE(nextBlockNo, sz_BLOCKS_PER_STRIDE), maskInit, outputMasksReady);
+}
