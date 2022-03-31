@@ -124,7 +124,7 @@ struct RE_Preprocessor final : public RE_Transformer {
     }
 
     RE * transformEnd(End * e) override {
-        return makeSeq();
+        return makeEmptySet();
     }
 
     RE * transformAssertion(Assertion * a) override {

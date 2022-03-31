@@ -141,7 +141,6 @@ class ProcessCandidateMatches final: public pablo::PabloKernel {
 public:
     ProcessCandidateMatches(BuilderRef b,
                          EncodingInfo & encodingScheme,
-                         unsigned wordOnlyRELen,
                          StreamSet * const basis,
                          StreamSet * Results,
                          StreamSet * dictStart,
@@ -153,7 +152,6 @@ protected:
     void generatePabloMethod() override;
     EncodingInfo & mEncodingScheme;
     bool mMatchOnly;
-    unsigned mCandidateMatchLen;
 };
 
 class codeword_index : public pablo::PabloKernel {
@@ -167,10 +165,10 @@ kernel::StreamSet * ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> & P,
                    EncodingInfo & encodingScheme,
                    StreamSet * const Basis,
                    StreamSet * const Results,
-                   unsigned wordOnlyRELen,
                    StreamSet * const hashtableMarks,
                    StreamSet * const decodedMarks,
-                   StreamSet * filterSpan);
+                   StreamSet * filterSpan,
+                   bool matchOnly = false);
 
 }
 #endif

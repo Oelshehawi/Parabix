@@ -1517,7 +1517,7 @@ SymbolGroupDecompression::SymbolGroupDecompression(BuilderRef b,
 : MultiBlockKernel(b, "SymbolGroupDecompression" + lengthGroupSuffix(encodingScheme, groupNo),
                    {Binding{"keyMarks0", codeWordMarks},
                        Binding{"hashMarks0", hashMarks},
-                       Binding{"byteData", byteData, BoundedRate(0,1)}
+                       Binding{"byteData", byteData, /*BoundedRate(0,1)*/ FixedRate(), Deferred()}
                    },
                    {}, {}, {},
                    {InternalScalar{ArrayType::get(b->getInt8Ty(), encodingScheme.byLength[groupNo].hi), "pendingOutput"},
@@ -1525,7 +1525,7 @@ SymbolGroupDecompression::SymbolGroupDecompression(BuilderRef b,
                     InternalScalar{ArrayType::get(ArrayType::get(b->getInt8Ty(), encodingScheme.byLength[groupNo].hi), phraseHashTableSize(encodingScheme.byLength[groupNo])), "hashTable"}}),
     mEncodingScheme(encodingScheme), mGroupNo(groupNo) {
     if (DelayedAttributeIsSet()) {
-        mOutputStreamSets.emplace_back("result", result, BoundedRate(0,1), Delayed(encodingScheme.maxSymbolLength()));
+        mOutputStreamSets.emplace_back("result", result, /*BoundedRate(0,1)*/FixedRate(), Delayed(encodingScheme.maxSymbolLength()));
     } else {
         mOutputStreamSets.emplace_back("result", result, BoundedRate(0,1));
     }
@@ -1810,8 +1810,10 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
     b->SetInsertPoint(stridesDone);
     // If the segment ends in the middle of a 2-byte codeword, we need to
     // make sure that we still have access to the codeword in the next block.
-    Value * processed = b->CreateSub(avail, lg.HI); // b->CreateSelect(b->isFinal(), avail, b->CreateSub(avail, lg.HI));
+    Value * processed = b->CreateSelect(b->isFinal(), avail, b->CreateSub(avail, lg.HI)); // b->CreateSub(avail, lg.HI);
     b->setProcessedItemCount("byteData", processed);
+    // b->CallPrintInt("processed", processed);
+    // b->CallPrintInt("avail", avail);
 
     Value * guaranteedProduced = b->CreateSub(avail, lg.HI);
     b->CreateMemCpy(b->getScalarFieldPtr("pendingOutput"), b->getRawOutputPointer("result", guaranteedProduced), lg.HI, 1);
@@ -2018,7 +2020,7 @@ void FinalizeCandidateMatches::generateMultiBlockLogic(BuilderRef b, Value * con
     b->setProducedItemCount("candidateMatchMarks", produced);
 
     Value * processed = b->CreateSelect(b->isFinal(), avail, b->CreateSub(avail, lg.HI));
-    b->setProcessedItemCount("byteData", processed);
+    b->setProcessedItemCount("cmpData", processed);
 
     b->CreateCondBr(b->isFinal(), hashMarksDone, updatePending);
     b->SetInsertPoint(updatePending);

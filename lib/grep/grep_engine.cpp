@@ -157,7 +157,6 @@ GrepEngine::GrepEngine(BaseDriver &driver) :
     mCmpU8index(nullptr),
     mCmpGCB_stream(nullptr),
     mCmpWordBoundary_stream(nullptr),
-    mWordOnlySubRegexLen(0),
     mUTF8_Transformer(re::NameTransformationMode::None),
     mEngineThread(pthread_self()) {}
 
@@ -325,23 +324,6 @@ Ref self: https://www.geeksforgeeks.org/perl-assertions-in-regex/
             UnicodeIndexing = true;
         }
     }
-    // if (mBinaryFilesMode == argv::ZTFCompressed) {
-        mSubExpression = preprocess_RE(mRE);
-        // first validate the mSubExpression to be valid for transformation
-        if (wordCharsExist(mSubExpression)) {
-            // llvm::errs() << "mSubExpression contains word chars" << "\n";
-            auto m = makeWordOnlySubExpression(mSubExpression, UnicodeIndexing);
-            mSubExpression = m.first;
-            mWordOnlySubRegexLen = m.second;
-            // errs() << "mSubExpression " << Printer_RE::PrintRE(mSubExpression) << '\n';
-            // errs() << "mWordOnlySubRegexLen " << mWordOnlySubRegexLen << '\n';
-        }
-
-        // mWordOnlySubRegexLen = getWordCharactersOnlySubRELen(mRE);
-        if (mWordOnlySubRegexLen > 0) {
-            setComponent(mExternalComponents, Component::WordOnlySubRE);
-        }
-    // }
     if (UnicodeIndexing) {
         setComponent(mExternalComponents, Component::S2P);
         setComponent(mExternalComponents, Component::UTF8index);
@@ -367,6 +349,18 @@ Ref self: https://www.geeksforgeeks.org/perl-assertions-in-regex/
         }
     }
     re::gatherNames(mRE, mExternalNames);
+
+    if (mBinaryFilesMode == argv::ZTFCompressed) {
+        mSubExpression = preprocess_RE(mRE);
+        // first validate the mSubExpression to be valid for transformation
+        if (wordCharsExist(mSubExpression)) {
+            // llvm::errs() << "mSubExpression contains word chars" << "\n";
+            mSubExpression = makeWordOnlySubExpression(mSubExpression, UnicodeIndexing);
+            setComponent(mExternalComponents, Component::WordOnlySubRE);
+            errs() << "mRE " << Printer_RE::PrintRE(mRE) << '\n';
+            errs() << "mSubExpression " << Printer_RE::PrintRE(mSubExpression) << '\n';
+        }
+    }
 
     // For simple regular expressions with a small number of characters, we
     // can bypass transposition and use the Direct CC compiler.
@@ -643,7 +637,7 @@ void GrepEngine::U8indexedGrep(const std::unique_ptr<ProgramBuilder> & P, re::RE
 }
 
 void GrepEngine::ZTFPreliminaryGrep(const std::unique_ptr<ProgramBuilder> & P, re::RE * re, StreamSet * Source, StreamSet * Results) {
-    StreamSet * SourceStream = getBasis(P, Source);
+    StreamSet * SourceStream = Source;
     /// TODO: add the Unicode grep and U8indexedGrep logic as per the RE properties
     std::unique_ptr<kernel::GrepKernelOptions> options;
     std::pair<int, int> lengths;
@@ -689,7 +683,7 @@ void GrepEngine::ZTFPreliminaryGrep(const std::unique_ptr<ProgramBuilder> & P, r
     }
 }
 
-void GrepEngine::ZTFDecmpLogic(const std::unique_ptr<ProgramBuilder> & P, StreamSet * Source, StreamSet * const Results, StreamSet * const Uncompressed_basis) {
+void GrepEngine::ZTFDecmpLogic(const std::unique_ptr<ProgramBuilder> & P, StreamSet * Source, StreamSet * const Results, StreamSet * const decompressed_basis, bool matchOnlyMode) {
     mZTFHashtableMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size());
     mZTFDecodedMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size());
     mFilterSpan = P->CreateStreamSet(1);
@@ -699,7 +693,7 @@ void GrepEngine::ZTFDecmpLogic(const std::unique_ptr<ProgramBuilder> & P, Stream
         P->CreateKernelCall<S2PKernel>(Source, src_bits);
         SourceBits = src_bits;
     }
-    StreamSet * const ztfHash_u8bytes = ZTFLinesLogic(P, encodingScheme1, SourceBits, Results, mWordOnlySubRegexLen, mZTFHashtableMarks, mZTFDecodedMarks, mFilterSpan);
+    StreamSet * const ztfHash_u8bytes = ZTFLinesLogic(P, encodingScheme1, SourceBits, Results, mZTFHashtableMarks, mZTFDecodedMarks, mFilterSpan, matchOnlyMode);
     const auto n = encodingScheme1.byLength.size();
     StreamSet * u8bytes = ztfHash_u8bytes;
     for(unsigned sym = 0; sym < 2/*SymCount*/; sym++) {
@@ -724,10 +718,10 @@ void GrepEngine::ZTFDecmpLogic(const std::unique_ptr<ProgramBuilder> & P, Stream
     }
     StreamSet * const decoded = P->CreateStreamSet(8);
     P->CreateKernelCall<S2PKernel>(u8bytes, decoded);
-    // Remove the dictionary segments and compressed segments from decompressed data
-    FilterByMask(P, mFilterSpan, decoded, Uncompressed_basis);
+    /// CHECK: Removes only the dictionary segments from decompressed data (not compressed segments)
+    FilterByMask(P, mFilterSpan, decoded, decompressed_basis);
     // StreamSet * const filtered_bytes = P->CreateStreamSet(1, 8);
-    // P->CreateKernelCall<P2SKernel>(Uncompressed_basis, filtered_bytes);
+    // P->CreateKernelCall<P2SKernel>(decompressed_basis, filtered_bytes);
     // P->CreateKernelCall<StdOutKernel>(filtered_bytes);
 }
 
@@ -762,7 +756,7 @@ StreamSet * GrepEngine::grepPipeline(const std::unique_ptr<ProgramBuilder> & P, 
     return Matches;
 }
 
-void GrepEngine::ztfGrepPipeline(const std::unique_ptr<ProgramBuilder> & P, StreamSet * const ByteStream, StreamSet * const decoded_stream) {
+void GrepEngine::ztfGrepPipeline(const std::unique_ptr<ProgramBuilder> & P, StreamSet * const ByteStream, StreamSet * const decoded_stream, bool matchOnlyMode) {
     if (argv::FullyDecompressFlag || !(hasComponent(mExternalComponents, Component::WordOnlySubRE))) {
         //get fully decompressed byte stream
         getFullyDecompressedBytes(P, ByteStream, decoded_stream);
@@ -819,12 +813,11 @@ void GrepEngine::ztfGrepPipeline(const std::unique_ptr<ProgramBuilder> & P, Stre
     // mPropertyStreamMap to be initialized
     //=======================================================================================
     // prepareExternalStreams(P, SourceStream);
-    // TODO: mRE should be the sub-RE with word-only chars
-    ZTFPreliminaryGrep(P, mRE, SourceStream, PreliminaryMatches);
-    // check for PreliminaryMatches in the uncompressed data
-    StreamSet * Uncompressed_basis = P->CreateStreamSet(ENCODING_BITS, 1);
-    ZTFDecmpLogic(P, SourceStream, PreliminaryMatches, Uncompressed_basis);
-    P->CreateKernelCall<P2SKernel>(Uncompressed_basis, decoded_stream);
+    ZTFPreliminaryGrep(P, mSubExpression, SourceStream, PreliminaryMatches);
+    // check for PreliminaryMatches in the compressed data
+    StreamSet * decompressed_basis = P->CreateStreamSet(ENCODING_BITS, 1);
+    ZTFDecmpLogic(P, SourceStream, PreliminaryMatches, decompressed_basis, matchOnlyMode);
+    P->CreateKernelCall<P2SKernel>(decompressed_basis, decoded_stream);
     mBinaryFilesMode = argv::Text;
 }
 
@@ -848,7 +841,7 @@ void GrepEngine::grepCodeGen() {
     StreamSet * Matches = nullptr;
     if(mBinaryFilesMode == argv::ZTFCompressed) {
         StreamSet * const decompressedByteStream = P->CreateStreamSet(1, ENCODING_BITS);
-        ztfGrepPipeline(P, ByteStream, decompressedByteStream);
+        ztfGrepPipeline(P, ByteStream, decompressedByteStream, true);
         Matches = grepPipeline(P, decompressedByteStream);
     }
     else {
@@ -1140,7 +1133,6 @@ void EmitMatchesEngine::grepCodeGen() {
         ztfGrepPipeline(E1, ByteStream, decompressedByteStream);
         // verified decompressed output
         // E1->CreateKernelCall<StdOutKernel>(decompressedByteStream);
-        // matches are incorrect as ByteStream is passed to the grepPipeline
         grepPipeline(E1, decompressedByteStream);
     }
     else {

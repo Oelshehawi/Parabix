@@ -71,8 +71,6 @@ public:
     WordCharacterValidator(): RE_Validator("WordCharacterValidator"),
     mPropObj(UCD::get_WORD_PropertyObject()),
     mWordOnlySet(mPropObj->GetCodepointSet("Yes")),
-    mCurSubRegexLen(0),
-    mMaxSubRegexLen(0),
     mAllWordChars(true),
     mWordCCCount(0),
     mSubExpression(makeSeq())
@@ -109,14 +107,9 @@ public:
         return (mWordCCCount != 0);
     }
 
-    unsigned getMaxSubRegexLen() {
-        return mMaxSubRegexLen;
-    }
 private:
     UCD::PropertyObject * mPropObj;
     UCD::UnicodeSet mWordOnlySet;
-    unsigned mCurSubRegexLen;
-    unsigned mMaxSubRegexLen;
     bool mAllWordChars;
     unsigned mWordCCCount;
     RE * mSubExpression;

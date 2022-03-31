@@ -397,7 +397,6 @@ std::vector<unsigned> getPrefixForGroupLength(EncodingInfo & encodingScheme, uns
 }
 ProcessCandidateMatches::ProcessCandidateMatches(BuilderRef kb,
                 EncodingInfo & encodingScheme,
-                unsigned wordOnlyRELen,
                 StreamSet * basis,
                 StreamSet * results,
                 StreamSet * dictStart,
@@ -405,14 +404,14 @@ ProcessCandidateMatches::ProcessCandidateMatches(BuilderRef kb,
                 StreamSet * candidateMatchesInDict,
                 StreamSet * groupStreams,
                 bool matchOnly)
-: PabloKernel(kb, "ProcessCandidateMatches_" + std::to_string(matchOnly) + "_" + std::to_string(wordOnlyRELen),
+: PabloKernel(kb, "ProcessCandidateMatches_" + std::to_string(matchOnly),
             {Binding{"basis", basis, FixedRate(), LookAhead(encodingScheme.maxEncodingBytes() - 1)},
              Binding{"results", results, FixedRate(), LookAhead(1)}},
             {Binding{"dictStart", dictStart, FixedRate(), Add1()},
              Binding{"candidateMatchesNonFinal", candidateMatchesNonFinal, FixedRate(), Add1()},
              Binding{"candidateMatchesInDict", candidateMatchesInDict, FixedRate(), Add1()},
              Binding{"groupStreams", groupStreams, FixedRate(), Add1()}}),
-mEncodingScheme(encodingScheme), mMatchOnly(matchOnly), mCandidateMatchLen(wordOnlyRELen) { }
+mEncodingScheme(encodingScheme), mMatchOnly(matchOnly) { }
 
 void ProcessCandidateMatches::generatePabloMethod() {
     PabloBuilder pb(getEntryScope());
@@ -428,7 +427,7 @@ void ProcessCandidateMatches::generatePabloMethod() {
         candidateMatchStart = pb.createXor(candidateMatchStart, results);
     }
 
-    auto pfx = getPrefixForGroupLength(mEncodingScheme, mCandidateMatchLen);
+    // auto pfx = getPrefixForGroupLength(mEncodingScheme, mCandidateMatchLen);
     PabloAST * hashTableBoundaryCommon = pb.createAnd(pb.createAnd(basis[7], basis[6]), pb.createAnd(basis[5], basis[4])); //Fx
     PabloAST * hashTableBoundaryStartHi = pb.createAnd3(basis[3], basis[2], basis[1]); //xE, xF
     PabloAST * hashTableBoundaryEndHi = pb.createAnd(hashTableBoundaryStartHi, basis[0]); //xF
@@ -469,13 +468,13 @@ void ProcessCandidateMatches::generatePabloMethod() {
         }
 
         // Attempt 2:
-        PabloAST * moreCandidateMatches = pb.createZeroes();
-        if (mCandidateMatchLen >= lo && mCandidateMatchLen <= hi) {
-            for (auto p : pfx) {
-                moreCandidateMatches = pb.createOr(moreCandidateMatches, bnc.EQ(basis, p));
-            }
-        }
-        candidateMatchStart = pb.createOr(candidateMatchStart, pb.createAnd(moreCandidateMatches, pb.createNot(hashTableSpan)));
+        // PabloAST * moreCandidateMatches = pb.createZeroes();
+        // if (mCandidateMatchLen >= lo && mCandidateMatchLen <= hi) {
+        //     for (auto p : pfx) {
+        //         moreCandidateMatches = pb.createOr(moreCandidateMatches, bnc.EQ(basis, p));
+        //     }
+        // }
+        // candidateMatchStart = pb.createOr(candidateMatchStart, pb.createAnd(moreCandidateMatches, pb.createNot(hashTableSpan)));
 
         PabloAST * inGroup = pb.createAnd(bnc.UGE(basis, base), bnc.ULT(basis, next_base));
         /// CHECK: eliminate any codeword prefix in dictionary matched incorrectly 
@@ -685,12 +684,11 @@ kernel::StreamSet * kernel::ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> 
                                 EncodingInfo & encodingScheme,
                                 StreamSet * const Basis,
                                 StreamSet * const Results,
-                                unsigned wordOnlyRELen,
                                 StreamSet * const hashtableMarks,
                                 StreamSet * const decodedMarks,
-                                StreamSet * const filterSpan) {
-// NOTE: The grep output requires complete lines to be printed as output;
-    //   and lines may be divided across multiple segments.
+                                StreamSet * const filterSpan,
+                                bool matchOnlyMode) {
+// NOTE: The grep output requires complete lines to be printed as output and lines may be divided across multiple segments.
     StreamSet * const dictStart = P->CreateStreamSet(1);
     StreamSet * const candidateMatchesInDict = P->CreateStreamSet(5);
     StreamSet * const groupStreams = P->CreateStreamSet(5);
@@ -699,11 +697,11 @@ kernel::StreamSet * kernel::ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> 
     1. eliminate all the invalid matches in dictionary. (matches that start from codeword pfx/sfx bytes)
     2. finalize the candidate matches: mark the codewords corresponding to the phrases with candidate matches.
         i. for every match in dictionary, move the match pos to the last byte of phrase. Assign to streams of different length groups.
-       ii. parse the compressed data, create a hashtabke of the codewords with candidate matches.
+       ii. parse the compressed data, create a hashtable of the codewords with candidate matches.
       iii. mark the codewords which have a hashtable entry.
 */
     /// WIP: Update results to remove any invalid matches in the dictionary (all done except pfx byte)
-    P->CreateKernelCall<ProcessCandidateMatches>(encodingScheme, wordOnlyRELen, Basis, Results, dictStart, candidateMatchesNonFinal, candidateMatchesInDict, groupStreams); // add 1-bit at the end of dictEnd stream
+    P->CreateKernelCall<ProcessCandidateMatches>(encodingScheme, Basis, Results, dictStart, candidateMatchesNonFinal, candidateMatchesInDict, groupStreams, matchOnlyMode); // add 1-bit at the end of dictEnd stream
 
     StreamSet * const basis_bytes = P->CreateStreamSet(1, 8);
     P->CreateKernelCall<P2SKernel>(Basis, basis_bytes);
@@ -716,7 +714,7 @@ kernel::StreamSet * kernel::ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> 
         StreamSet * const groupCandidateMatchMarks = P->CreateStreamSet(1);
         // LLVM kernel to mark all the codewords corresponding to candidate matches; length-wise processed
         P->CreateKernelCall<FinalizeCandidateMatches>(encodingScheme, i, basis_bytes, groupMatchMarks, groupCodewordMarks, groupCandidateMatchMarks);
-        candidateMatchMarks.push_back(groupMatchMarks);
+        candidateMatchMarks.push_back(groupCandidateMatchMarks);
     }
     candidateMatchMarks.push_back(candidateMatchesNonFinal);
     StreamSet * const candidateMatchesFinal = P->CreateStreamSet(1);
@@ -747,12 +745,10 @@ kernel::StreamSet * kernel::ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> 
     SpreadByMask(P, ztfRunSpreadMask, ztfHash_Basis_updated/*Basis*/, ztfHash_u8_Basis);
     // StreamSet * const ztfHash_u8bytes = P->CreateStreamSet(1, 8);
     // P->CreateKernelCall<P2SKernel>(ztfHash_u8_Basis, ztfHash_u8bytes);
-    // zero out the streams of ztfHash_u8_Basis that should not be decompressed
-    // filterSpan -> filter out only the data that has potential match => remove zero'd out bytes
     P->CreateKernelCall<ZTF_PhraseDecodeLengths>(encodingScheme, 2/*SymCount*/, ztfHash_u8_Basis, decodedMarks, hashtableMarks, filterSpan, false);
 
-    // StreamSet * const Uncompressed_basis = P->CreateStreamSet(8);
-    // FilterByMask(P, filterSpan, ztfHash_u8_Basis, Uncompressed_basis);
+    // StreamSet * const decompressed_basis = P->CreateStreamSet(8);
+    // FilterByMask(P, filterSpan, ztfHash_u8_Basis, decompressed_basis);
     StreamSet * const ztfHash_u8bytes = P->CreateStreamSet(1, 8);
     P->CreateKernelCall<P2SKernel>(ztfHash_u8_Basis, ztfHash_u8bytes);
     // P->CreateKernelCall<DebugDisplayKernel>("filterSpan", filterSpan);

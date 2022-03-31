@@ -608,7 +608,6 @@ struct SubExpressionTransformer final : public RE_Transformer {
             if (mNonWordFound) {
                 if (elems.size() > mMaxSubRegexLen) {
                     mMaxSubRegexLen = elems.size();
-                    allSubExprLen.push_back(mMaxSubRegexLen);
                     mSubExpression = makeSeq(elems.begin(), elems.end());
                     // errs() << "mSubExpression non-final " << Printer_RE::PrintRE(mSubExpression) << '\n';
                     elems.clear();
@@ -621,7 +620,6 @@ struct SubExpressionTransformer final : public RE_Transformer {
         // check the remaining CC in the list
         if (elems.size() > mMaxSubRegexLen) {
             mMaxSubRegexLen = elems.size();
-            allSubExprLen.push_back(mMaxSubRegexLen);
             mSubExpression = makeSeq(elems.begin(), elems.end());
             elems.clear();
         }
@@ -638,7 +636,6 @@ struct SubExpressionTransformer final : public RE_Transformer {
         for (RE * e : *alt) {
             mMaxSubRegexLen = 0;
             RE * e1 = transform(e);
-            allSubExprLen.push_back(mMaxSubRegexLen);
             if (e1 != e) any_changed = true;
             elems.push_back(e1);
         }
@@ -658,7 +655,7 @@ struct SubExpressionTransformer final : public RE_Transformer {
     }
 
     unsigned getSubRegexLen() {
-        return allSubExprLen[0];
+        return mMaxSubRegexLen;
     }
 
     RE * getSubExpression() {
@@ -669,29 +666,22 @@ struct SubExpressionTransformer final : public RE_Transformer {
     mPropObj(UCD::get_WORD_PropertyObject()),
     mNonWordOnlySet(mPropObj->GetCodepointSet("No")),
     mIndexing(indexing),
-    mIndexingAlphabet(&cc::UTF8),
     mNonWordFound(false),
     mMaxSubRegexLen(0)
-    { 
-        if(mIndexing) {
-            mIndexingAlphabet = &cc::Unicode;
-        }
-    }
+    { }
 private:
     UCD::PropertyObject * mPropObj;
     UCD::UnicodeSet mNonWordOnlySet;
     bool mIndexing;
-    const cc::Alphabet * mIndexingAlphabet;
     bool mNonWordFound;
     unsigned mMaxSubRegexLen;
-    std::vector<unsigned> allSubExprLen;
     RE * mSubExpression;
 };
 
-std::pair<RE *, unsigned> makeWordOnlySubExpression(RE * r, bool UnicodeIndexing) {
-    errs() << "original RE " << Printer_RE::PrintRE(r) << '\n';
+RE * makeWordOnlySubExpression(RE * r, bool UnicodeIndexing) {
+    // errs() << "original RE " << Printer_RE::PrintRE(r) << '\n';
     SubExpressionTransformer s(UnicodeIndexing);
-    return std::make_pair(s.transformRE(r), s.getSubRegexLen());
+    return s.transformRE(r);
 }
 
 /*

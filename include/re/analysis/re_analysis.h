@@ -42,7 +42,7 @@ bool hasEndAnchor(const RE * r);
     
 bool DefiniteLengthBackReferencesOnly(const RE * re);
     
-std::pair<RE *, unsigned> makeWordOnlySubExpression(RE * r, bool UnicodeIndexing);
+RE * makeWordOnlySubExpression(RE * r, bool UnicodeIndexing);
 
 }
 

@@ -203,6 +203,7 @@ S2PKernel::S2PKernel(BuilderRef b,
 , {}, {}, {})
 , mZeroMask(zeroMask != nullptr)
 , mNumOfStreams(BasisBits->getNumElements()) {
+
     assert (codeUnitStream->getFieldWidth() == BasisBits->getNumElements());
 }
 
