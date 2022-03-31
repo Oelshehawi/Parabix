@@ -78,7 +78,7 @@ mEncodingScheme(encodingScheme), mGroupNo(groupNo), mNumSym(numSyms), mOffset(of
         mOutputStreamSets.emplace_back("hashMarks", hashMarks, BoundedRate(0,1));
         addInternalScalar(ArrayType::get(b->getInt8Ty(), encodingScheme.byLength[groupNo].hi), "pendingOutput");
     }
-    setStride(1024000);
+    setStride(1048576);
 }
 
 void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const numOfStrides) {
@@ -498,7 +498,7 @@ mEncodingScheme(encodingScheme), mGroupNo(groupNo), mNumSym(numSyms), mSubStride
         mOutputStreamSets.emplace_back("encodedBytes", encodedBytes, BoundedRate(0,1));
         addInternalScalar(ArrayType::get(b->getInt8Ty(), encodingScheme.byLength[groupNo].hi), "pendingOutput");
     }
-    setStride(1024000);
+    setStride(1048576);
 }
 
 void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const numOfStrides) {
@@ -869,12 +869,12 @@ FilterCompressedData::FilterCompressedData(BuilderRef b,
 mSubStride(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS)) {
     if (DelayedAttributeIsSet()) {
         mOutputStreamSets.emplace_back("cmpBytes", cmpBytes, BoundedRate(0, 1)/*PopcountOf("phraseMask")*/);
-        mOutputStreamSets.emplace_back("partialSum", partialSum, FixedRate(ProcessingRate::Rational{1, 1024000}), Delayed(1));
+        mOutputStreamSets.emplace_back("partialSum", partialSum, FixedRate(ProcessingRate::Rational{1, 1048576}), Delayed(1));
     } else {
         mOutputStreamSets.emplace_back("cmpBytes", cmpBytes, PopcountOf("phraseMask"));
         addInternalScalar(ArrayType::get(b->getInt8Ty(), encodingScheme.maxSymbolLength()), "pendingOutput");
     }
-    setStride(1024000);
+    setStride(1048576);
 }
 // use symbolEndMarks and check if accessible byte_pos > last accessible symbol_end markPos to ensure complete phrase is written 
 // in a single segment
@@ -1056,12 +1056,12 @@ WriteDictionary::WriteDictionary(BuilderRef b,
 mNumSym(numSyms), mSubStride(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS)) {
     if (DelayedAttributeIsSet()) {
         mOutputStreamSets.emplace_back("dictionaryBytes", dictionaryBytes, BoundedRate(0, 1));
-        mOutputStreamSets.emplace_back("dictPartialSum", dictPartialSum, FixedRate(ProcessingRate::Rational{1, 1024000}), Delayed(1));
+        mOutputStreamSets.emplace_back("dictPartialSum", dictPartialSum, FixedRate(ProcessingRate::Rational{1, 1048576}), Delayed(1));
     } else {
         mOutputStreamSets.emplace_back("dictionaryBytes", dictionaryBytes, BoundedRate(0,1));
         addInternalScalar(ArrayType::get(b->getInt8Ty(), encodingScheme.maxSymbolLength()), "pendingOutput");
     }
-    setStride(1024000);
+    setStride(1048576);
 }
 
 void WriteDictionary::generateMultiBlockLogic(BuilderRef b, Value * const numOfStrides) {
@@ -1485,7 +1485,7 @@ InterleaveCompressionSegment::InterleaveCompressionSegment(BuilderRef b,
                                     unsigned strideBlocks)
 : MultiBlockKernel(b, "InterleaveCompressionSegment" + std::to_string(strideBlocks) + "_" + std::to_string(dictPartialSum->getNumElements()) + "_" + std::to_string(cmpPartialSum->getNumElements()),
                    {Binding{"dictPartialSum", dictPartialSum, FixedRate(1)},
-                    Binding{"cmpPartialSum", cmpPartialSum, /*FixedRate(1024000)*/ FixedRate(1)},
+                    Binding{"cmpPartialSum", cmpPartialSum, /*FixedRate(1048576)*/ FixedRate(1)},
                     Binding{"dictData", dictData, PartialSum("dictPartialSum")},
                     Binding{"codedBytes", codedBytes, PartialSum("cmpPartialSum") /*PopcountOf("compressedMask")*/}},
                    {}, {}, {}, {}) {
