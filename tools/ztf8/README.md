@@ -143,3 +143,9 @@ To run the ztf-phrase-hash application, follow the below steps.
 
 `bin/ztf-phrase-hash -d finalCompressed.z > decompressed`
 
+
+## ZTF-grep
+
+Presentation
+https://docs.google.com/presentation/d/1WrEOIsBYaAR-oLXklQY5Etr3Afzk6N3dy6-brh_qIyw/edit?usp=sharing
+
