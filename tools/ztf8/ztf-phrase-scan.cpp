@@ -537,6 +537,7 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
     BasicBlock * const stridesDone = b->CreateBasicBlock("stridesDone");
     BasicBlock * const updatePending = b->CreateBasicBlock("updatePending");
     BasicBlock * const compressionMaskDone = b->CreateBasicBlock("compressionMaskDone");
+    BasicBlock * const updateEntry = b->CreateBasicBlock("updateEntry");
 
 #ifdef PRINT_PHRASE_DEBUG_INFO
     // BasicBlock * const writeDebugOutput = b->CreateBasicBlock("writeDebugOutput");
@@ -681,20 +682,19 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
     2. If the hashcode exists in the hashtable but the current phrase and hash table entry do not match, go to next symbol.
 */
     Value * symIsEqEntry = b->CreateAnd(b->CreateICmpEQ(entry1, sym1), b->CreateICmpEQ(entry2, sym2));
-    b->CreateCondBr(symIsEqEntry, markCompression, tryStore);
+    b->CreateCondBr(symIsEqEntry, markCompression, storeKey);
 
-    b->SetInsertPoint(tryStore);
-    Value * isEmptyEntry = b->CreateICmpEQ(b->CreateOr(entry1, entry2), Constant::getNullValue(lg.halfLengthTy));
-    b->CreateCondBr(isEmptyEntry, storeKey, nextKey);
-
+    // replace any colliding phrase; it'll be the new frequent phrase
     b->SetInsertPoint(storeKey);
 #ifdef PRINT_DICT_ONLY
-    b->CreateWriteCall(b->getInt32(STDOUT_FILENO), symPtr1, keyLength);
+    b->CallPrintInt("strideNo", strideNo);
+    b->CallPrintInt("tableIdxHash", tableIdxHash);
+    b->CreateWriteCall(b->getInt32(STDERR_FILENO), symPtr1, keyLength);
     writtenVal = b->CreateOr(b->CreateShl(writtenVal, lg.MAX_HASH_BITS), ZTF_prefix1, "writtenVal");
     Value * const copyLen = b->CreateAdd(lg.ENC_BYTES, sz_ZERO);
     Value * outputCodeword = b->CreateAlloca(b->getInt64Ty(), copyLen);
     b->CreateAlignedStore(writtenVal, outputCodeword, 1);
-    b->CreateWriteCall(b->getInt32(STDOUT_FILENO), outputCodeword, copyLen);
+    // b->CreateWriteCall(b->getInt32(STDOUT_FILENO), outputCodeword, copyLen);
     // b->CallPrintInt("writtenVal", writtenVal);
     // b->CallPrintInt("keyLength", keyLength);
     // b->CallPrintInt("mNumSym", b->getSize(mNumSym));
@@ -1546,7 +1546,6 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
     BasicBlock * const stridePrologue = b->CreateBasicBlock("stridePrologue");
     BasicBlock * const strideMasksReady = b->CreateBasicBlock("strideMasksReady");
     BasicBlock * const keyProcessingLoop = b->CreateBasicBlock("keyProcessingLoop");
-    BasicBlock * const storeKey = b->CreateBasicBlock("storeKey");
     BasicBlock * const nextKey = b->CreateBasicBlock("nextKey");
     BasicBlock * const keysDone = b->CreateBasicBlock("keysDone");
     BasicBlock * const hashProcessingLoop = b->CreateBasicBlock("hashProcessingLoop");
@@ -1554,6 +1553,9 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
     BasicBlock * const nextHash = b->CreateBasicBlock("nextHash");
     BasicBlock * const hashesDone = b->CreateBasicBlock("hashesDone");
     BasicBlock * const stridesDone = b->CreateBasicBlock("stridesDone");
+    BasicBlock * const updateHashTable = b->CreateBasicBlock("updateHashTable");
+    BasicBlock * const replaceCodewords = b->CreateBasicBlock("replaceCodewords");
+    BasicBlock * const strideDone = b->CreateBasicBlock("strideDone");
 
     Value * const initialPos = b->getProcessedItemCount("keyMarks0");
     Value * const avail = b->getAvailableItemCount("keyMarks0");
@@ -1583,11 +1585,15 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
     std::vector<Value *> keyMasks(1);
     std::vector<Value *> hashMasks(1);
     initializeDecompressionMasks(b, sw, sz_BLOCKS_PER_STRIDE, 1, strideBlockOffset, keyMasks, hashMasks, strideMasksReady);
-    Value * keyMask = keyMasks[0];
-    Value * hashMask = hashMasks[0];
+    Value * keyMask = keyMasks[0]; // codeword marks in dictionary
+    Value * hashMask = hashMasks[0]; // codeword marks in compressed data
 
     b->SetInsertPoint(strideMasksReady);
+    Value * decmpFirst = b->CreateICmpUGE(keyMask, hashMask); // hashMarks should be decompressed first
 
+    b->CreateCondBr(decmpFirst, replaceCodewords, updateHashTable);
+
+    b->SetInsertPoint(updateHashTable);
     Value * keyWordBasePtr = b->getInputStreamBlockPtr("keyMarks0", sz_ZERO, strideBlockOffset);
     keyWordBasePtr = b->CreateBitCast(keyWordBasePtr, sw.pointerTy);
     DEBUG_PRINT("keyMask", keyMask);
@@ -1595,9 +1601,9 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
 
     b->SetInsertPoint(keyProcessingLoop);
     PHINode * const keyMaskPhi = b->CreatePHI(sizeTy, 2);
-    keyMaskPhi->addIncoming(keyMask, strideMasksReady);
+    keyMaskPhi->addIncoming(keyMask, updateHashTable);
     PHINode * const keyWordPhi = b->CreatePHI(sizeTy, 2);
-    keyWordPhi->addIncoming(sz_ZERO, strideMasksReady);
+    keyWordPhi->addIncoming(sz_ZERO, updateHashTable);
     Value * keyWordIdx = b->CreateCountForwardZeroes(keyMaskPhi, "keyWordIdx");
     Value * nextKeyWord = b->CreateZExtOrTrunc(b->CreateLoad(b->CreateGEP(keyWordBasePtr, keyWordIdx)), sizeTy);
     Value * theKeyWord = b->CreateSelect(b->CreateICmpEQ(keyWordPhi, sz_ZERO), nextKeyWord, keyWordPhi);
@@ -1662,14 +1668,6 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
     Value * sym2 = b->CreateLoad(symPtr2);
     Value * entry1 = b->CreateMonitoredScalarFieldLoad("hashTable", tblPtr1);
     Value * entry2 = b->CreateMonitoredScalarFieldLoad("hashTable", tblPtr2);
-    // hash collisions may exists between k-symbol phrases, just replace the collisions with latest phrase
-    // as we would have already replaced (k+1)-symbol phrase already mapped to the same hashtable index
-    Value * isEmptyEntry = b->CreateIsNull(b->CreateOr(entry1, entry2));
-    b->CreateCondBr(isEmptyEntry, storeKey, nextKey);
-    b->SetInsertPoint(storeKey);
-    // We have a new symbols that allows future occurrences of the symbol to
-    // be compressed using the hash code.
-
 #ifdef PRINT_DECOMPRESSION_DICT_INFO
     Value * pfxLgthMask = thePfx;
     pfxLgthMask = b->CreateTrunc(b->CreateAnd(pfxLgthMask, lg.PREFIX_LENGTH_MASK), b->getInt64Ty());
@@ -1686,6 +1684,7 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
     b->CallPrintInt("keyStartPos", keyStartPos);
     b->CallPrintInt("keyLength", keyLength);
 #endif
+    // store/replace phrase in hashtable
     b->CreateMonitoredScalarFieldStore("hashTable", sym1, tblPtr1);
     b->CreateMonitoredScalarFieldStore("hashTable", sym2, tblPtr2);
     b->CreateBr(nextKey);
@@ -1705,6 +1704,9 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
     b->CreateCondBr(b->CreateICmpNE(nextKeyMask, sz_ZERO), keyProcessingLoop, keysDone);
 
     b->SetInsertPoint(keysDone);
+    b->CreateCondBr(decmpFirst, strideDone, replaceCodewords);
+
+    b->SetInsertPoint(replaceCodewords);
     // replace codewords by decompressed phrases
     Value * hashWordBasePtr = b->getInputStreamBlockPtr("hashMarks0", sz_ZERO, strideBlockOffset);
     hashWordBasePtr = b->CreateBitCast(hashWordBasePtr, sw.pointerTy);
@@ -1712,9 +1714,9 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
 
     b->SetInsertPoint(hashProcessingLoop);
     PHINode * const hashMaskPhi = b->CreatePHI(sizeTy, 2);
-    hashMaskPhi->addIncoming(hashMask, keysDone);
+    hashMaskPhi->addIncoming(hashMask, replaceCodewords);
     PHINode * const hashWordPhi = b->CreatePHI(sizeTy, 2);
-    hashWordPhi->addIncoming(sz_ZERO, keysDone);
+    hashWordPhi->addIncoming(sz_ZERO, replaceCodewords);
     Value * hashWordIdx = b->CreateCountForwardZeroes(hashMaskPhi, "hashWordIdx");
     Value * nextHashWord = b->CreateZExtOrTrunc(b->CreateLoad(b->CreateGEP(hashWordBasePtr, hashWordIdx)), sizeTy);
     Value * theHashWord = b->CreateSelect(b->CreateICmpEQ(hashWordPhi, sz_ZERO), nextHashWord, hashWordPhi);
@@ -1804,7 +1806,10 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
     b->CreateCondBr(b->CreateICmpNE(nextHashMask, sz_ZERO), hashProcessingLoop, hashesDone);
 
     b->SetInsertPoint(hashesDone);
-    strideNo->addIncoming(nextStrideNo, hashesDone);
+    b->CreateCondBr(decmpFirst, updateHashTable, strideDone);
+    b->SetInsertPoint(strideDone);
+
+    strideNo->addIncoming(nextStrideNo, strideDone);
     b->CreateCondBr(b->CreateICmpNE(nextStrideNo, numOfStrides), stridePrologue, stridesDone);
 
     b->SetInsertPoint(stridesDone);
