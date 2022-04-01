@@ -67,13 +67,14 @@ static cl::opt<bool> Decompression("d", cl::desc("Decompress from ZTF-Runs to UT
 static cl::alias DecompressionAlias("decompress", cl::desc("Alias for -d"), cl::aliasopt(Decompression));
 static cl::opt<bool> LengthBasedCompression("len-cmp", cl::desc("Phrase selection based on length of phrases"), cl::cat(ztfHashOptions), cl::init(true));
 static cl::opt<bool> FreqBasedCompression("freq-cmp", cl::desc("Phrase selection based on frequency of phrases"), cl::cat(ztfHashOptions), cl::init(false));
-static cl::opt<int> SymCount("length", cl::desc("Length of words."), cl::init(2));
-static cl::opt<int> PhraseLen("plen", cl::desc("Debug - length of phrase."), cl::init(0), cl::cat(ztfHashOptions));
-static cl::opt<int> PhraseLenOffset("offset", cl::desc("Offset to actual length of phrase"), cl::init(1), cl::cat(ztfHashOptions));
+static cl::opt<unsigned> SymCount("length", cl::desc("Length of words."), cl::init(2));
+static cl::opt<unsigned> PhraseLen("plen", cl::desc("Debug - length of phrase."), cl::init(0), cl::cat(ztfHashOptions));
+static cl::opt<unsigned> PhraseLenOffset("offset", cl::desc("Offset to actual length of phrase"), cl::init(1), cl::cat(ztfHashOptions));
 static cl::opt<bool> UseParallelFilterByMask("fbm-p", cl::desc("Use default FilterByMask"), cl::cat(ztfHashOptions), cl::init(false));
+static cl::opt<unsigned> Grouping("g", cl::desc("Experimental symbol grouping techniques"), cl::init(0), cl::cat(ztfHashOptions));
 
 typedef void (*ztfHashFunctionType)(uint32_t fd, const char *, const char *);
-// typedef void (*ztfHashDecmpFunctionType)(uint32_t fd);
+typedef void (*ztfHashDecmpFunctionType)(uint32_t fd);
 // typedef uint32_t (*ztfHashFunctionType)(uint32_t fd, const char *, const char *);
 typedef uint32_t (*ztfHashDecmpFunctionType)(uint32_t fd);
 
@@ -102,13 +103,17 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
     P->CreateKernelCall<S2PKernel>(codeUnitStream, u8basis);
 
     StreamSet * WordChars = P->CreateStreamSet(1);
+    StreamSet * symStart = P->CreateStreamSet(1);
     // Mark all the Unicode words in the input
-    P->CreateKernelCall<WordMarkKernel>(u8basis, WordChars);
+    P->CreateKernelCall<WordMarkKernel>(u8basis, WordChars, symStart);
+    // P->CreateKernelCall<DebugDisplayKernel>("WordChars", WordChars);
 
+    StreamSet * symEnd = P->CreateStreamSet(1);
+    P->CreateKernelCall<MarkSymEnds>(WordChars, symEnd);
     StreamSet * const phraseRuns = P->CreateStreamSet(1);
     // Mark ZTF symbols among the Unicode words
-    P->CreateKernelCall<ZTF_Phrases>(u8basis, WordChars, phraseRuns);
-    //P->CreateKernelCall<DebugDisplayKernel>("phraseRuns", phraseRuns);
+    P->CreateKernelCall<ZTF_Phrases>(u8basis, WordChars, symStart, symEnd, Grouping, phraseRuns);
+    // P->CreateKernelCall<DebugDisplayKernel>("phraseRuns", phraseRuns);
 
     std::vector<StreamSet *> phraseLenBixnum(SymCount);
     std::vector<StreamSet *> phraseLenOverflow(SymCount);
@@ -239,7 +244,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
             dictBoundaryMasks.push_back(dictBoundaryMask);
             u8bytes = output_bytes;
             //Update sym-1 hashMarks to avoid compressing sub-phrases of any of the already compressed phrases
-            for (unsigned j = 0; j < sym; j++) {
+            for (int j = 0; j < sym; j++) {
                 StreamSet * const updatedHashMark = P->CreateStreamSet(1);
                 P->CreateKernelCall<UpdateNextHashMarks>(extractionMask, allHashMarks[j], i, updatedHashMark);
                 allHashMarks[j] = updatedHashMark;
@@ -250,13 +255,9 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
     StreamSet * const combinedPhraseMask = P->CreateStreamSet(1);
     P->CreateKernelCall<StreamsMerge>(phraseMasks, combinedPhraseMask);
 
-    // StreamSet * const combinedDictBoundaryMask = P->CreateStreamSet(1);
-    // P->CreateKernelCall<StreamsMerge>(dictBoundaryMasks, combinedDictBoundaryMask);
-
     StreamSet * const combinedMask = P->CreateStreamSet(1);
     P->CreateKernelCall<StreamsIntersect>(extractionMasks, combinedMask);
     // P->CreateKernelCall<PopcountKernel>(combinedMask, P->getOutputScalar("count1"));
-    // P->CreateKernelCall<DebugDisplayKernel>("combinedMask", combinedMask);
 
     StreamSet * const dict_bytes = P->CreateStreamSet(1, 8);
     StreamSet * const dict_partialSum = P->CreateStreamSet(1, 64);

@@ -44,7 +44,7 @@ public:
 
 class WordMarkKernel : public pablo::PabloKernel {
 public:
-    WordMarkKernel(BuilderRef kb, StreamSet * BasisBits, StreamSet * WordMarks);
+    WordMarkKernel(BuilderRef kb, StreamSet * BasisBits, StreamSet * WordMarks, StreamSet * possibleSymStart);
 protected:
     void generatePabloMethod() override;
 };
@@ -108,9 +108,13 @@ public:
     ZTF_Phrases(BuilderRef kb,
                 StreamSet * basisBits,
                 StreamSet * wordChar,
+                StreamSet * symStart,
+                StreamSet * symEnd,
+                unsigned group,
                 StreamSet * phraseRuns);
 protected:
     void generatePabloMethod() override;
+    unsigned mGroup;
 };
 
 // Generate i-th phraseRunSeq stream with n-syms for the given phraseRuns.
@@ -142,6 +146,17 @@ protected:
     void generatePabloMethod() override;
     unsigned mNumSyms;
     unsigned mSeqNum;
+};
+
+class MarkSymEnds : public pablo::PabloKernel {
+public:
+    MarkSymEnds(BuilderRef kb,
+                   StreamSet * wordMarks, StreamSet * symEnd)
+    : pablo::PabloKernel(kb, "MarkSymEnds",
+                         {Binding{"wordMarks", wordMarks, FixedRate(1), LookAhead(1)}},
+                         {Binding{"symEnd", symEnd}}) { }
+protected:
+    void generatePabloMethod() override;
 };
 
 // Given parsed symbol runs, produce a stream marking end positions only.

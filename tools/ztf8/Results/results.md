@@ -51,6 +51,7 @@ Compression results on an extensively diverse set of Wikibooks files.
 1. Using weighted selection of hashtable entries
 * Min-max symbol length: 3-32 bytes
 * Segment size - 1048576 (1024^2) bytes
+* Git commit SHA: 500bdbd03ab46b325a5dd70335d2fe35b618d5f7
 
 | Filename | Size (MB) | Compressed file (MB) |  Decompression time (sec)  |
 |---------:|----------:|---------------------:|---------------------------:|

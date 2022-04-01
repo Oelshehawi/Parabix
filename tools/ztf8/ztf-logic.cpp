@@ -114,7 +114,6 @@ unsigned EncodingInfo::getSubtableSize(unsigned groupNo) const {
 }
  
 unsigned EncodingInfo::tableSizeBits(unsigned groupNo) const {
-    auto g = byLength[groupNo];
     switch(groupNo) {
         case 0: return 13;
         case 1: return 14;
@@ -125,8 +124,8 @@ unsigned EncodingInfo::tableSizeBits(unsigned groupNo) const {
     }
 }
 
-WordMarkKernel::WordMarkKernel(BuilderRef kb, StreamSet * BasisBits, StreamSet * WordMarks)
-: PabloKernel(kb, "WordMarks", {Binding{"source", BasisBits}}, {Binding{"WordMarks", WordMarks}}) { }
+WordMarkKernel::WordMarkKernel(BuilderRef kb, StreamSet * BasisBits, StreamSet * WordMarks, StreamSet * possibleSymStart)
+: PabloKernel(kb, "WordMarks", {Binding{"source", BasisBits}}, {Binding{"WordMarks", WordMarks}, Binding{"possibleSymStart", possibleSymStart}}) { }
 
 void WordMarkKernel::generatePabloMethod() {
     pablo::PabloBuilder pb(getEntryScope());
@@ -138,7 +137,10 @@ void WordMarkKernel::generatePabloMethod() {
     UCD::UCDCompiler unicodeCompiler(ccc, pb);
     unicodeCompiler.addTarget(wordChar, word_CC);
     unicodeCompiler.compile();
+    PabloAST * candidateSymStart = pb.createAnd(wordChar, pb.createAdvance(pb.createNot(wordChar), 1));
     pb.createAssign(pb.createExtract(getOutputStreamVar("WordMarks"), pb.getInteger(0)), wordChar);
+    pb.createAssign(pb.createExtract(getOutputStreamVar("possibleSymStart"), pb.getInteger(0)), candidateSymStart);
+
 }
 
 void ByteRun::generatePabloMethod() {
@@ -269,20 +271,49 @@ void ZTF_Symbols::generatePabloMethod() {
     pb.createAssign(pb.createExtract(getOutputStreamVar("symbolRuns"), pb.getInteger(0)), runs);
 }
 
+void MarkSymEnds::generatePabloMethod() {
+    PabloBuilder pb(getEntryScope());
+    PabloAST * wordMarks = getInputStreamSet("wordMarks")[0];
+    PabloAST * symEnd = pb.createAnd(wordMarks, pb.createNot(pb.createLookahead(wordMarks, 1)));
+    pb.createAssign(pb.createExtract(getOutputStreamVar("symEnd"), pb.getInteger(0)), symEnd);
+}
+
+// Change the definition of symbol -> merge any 1,2 byte symbol adjacent to longer symbol to make a longer "1-sym" phrase.
 ZTF_Phrases::ZTF_Phrases(BuilderRef kb,
                 StreamSet * basisBits,
                 StreamSet * wordChar,
+                StreamSet * possibleSymStart,
+                StreamSet * possibleSymEnd,
+                unsigned group, // 0, 1, 2, 3 => 0:None; 1:small+longer, small+small; 2:longer+small; 3:1 followed by 2;
                 StreamSet * phraseRuns)
-: PabloKernel(kb, "ZTF_Phrases",
+: PabloKernel(kb, "ZTF_Phrases_"+ std::to_string(group),
             {Binding{"basisBits", basisBits, FixedRate(1), LookAhead(1)},
-             Binding{"wordChar", wordChar, FixedRate(1), LookAhead(3)}},
-            {Binding{"phraseRuns", phraseRuns}}) { }
+             Binding{"wordChar", wordChar, FixedRate(1), LookAhead(3)},
+             Binding{"possibleSymStart", possibleSymStart, FixedRate(1), LookAhead(3)},
+             Binding{"possibleSymEnd", possibleSymEnd, FixedRate(1), LookAhead(3)}},
+            {Binding{"phraseRuns", phraseRuns}}), mGroup(group) { }
 
 void ZTF_Phrases::generatePabloMethod() {
     pablo::PabloBuilder pb(getEntryScope());
     std::vector<PabloAST *> basis = getInputStreamSet("basisBits");
     cc::Parabix_CC_Compiler_Builder ccc(getEntryScope(), basis);
     pablo::PabloAST * wordChar = getInputStreamSet("wordChar")[0];
+    PabloAST * possibleSymStart = getInputStreamSet("possibleSymStart")[0];
+    PabloAST * possibleSymEnd = getInputStreamSet("possibleSymEnd")[0];
+
+    PabloAST * removeFollowingSymStart = pb.createZeroes();
+    PabloAST * removePrecedingSymStart = pb.createZeroes();
+    if (mGroup == 1 || mGroup == 3) {
+        for(unsigned i = 0; i < 3; i++) {
+            removePrecedingSymStart = pb.createOr(removePrecedingSymStart, pb.createAnd(possibleSymEnd, pb.createLookahead(possibleSymEnd, i+1)));
+        }
+        // pb.createDebugPrint(removePrecedingSymStart, "removePrecedingSymStart");
+    }
+    if (mGroup == 2 || mGroup == 3) {
+        for (unsigned i = 0; i < 3; i++) {
+            removeFollowingSymStart = pb.createOr(removeFollowingSymStart, pb.createAnd(possibleSymStart, pb.createAdvance(possibleSymStart, i+1)));
+        }
+    }
 
     // Find start bytes of word characters.
     PabloAST * ASCII = ccc.compileCC(re::makeCC(0x0, 0x7F));
@@ -297,14 +328,14 @@ void ZTF_Phrases::generatePabloMethod() {
     //
     // ZTF Code symbols
     PabloAST * multiSymSfx = ccc.compileCC(re::makeCC(0x80, 0xBF));
-    PabloAST * multiSymPfx = ccc.compileCC(re::makeCC(0xE0, 0xFF));
+    // PabloAST * multiSymPfx = ccc.compileCC(re::makeCC(0xE0, 0xFF));
     PabloAST * anyPfx = ccc.compileCC(re::makeCC(0xC0, 0xFF));
-    PabloAST * pfx1 = ccc.compileCC(re::makeCC(0xC0, 0xDF));
+    // PabloAST * pfx1 = ccc.compileCC(re::makeCC(0xC0, 0xDF));
     PabloAST * pfx2 = ccc.compileCC(re::makeCC(0xE0, 0xEF));
     PabloAST * pfx3 = ccc.compileCC(re::makeCC(0xF0, 0xFF));
 
     /// TODO: F8-FF can have any suffix except multi-byte pfx byte
-    PabloAST * ZTF_sym = pb.createAnd(pb.createAdvance(anyPfx, 1), ASCII); // // PFX 00-7F
+    PabloAST * ZTF_sym = pb.createAnd(pb.createAdvance(anyPfx, 1), ASCII); // PFX 00-7F
 
     ZTF_sym = pb.createOr(ZTF_sym, pb.createAnd(pb.createAdvance(ZTF_sym, 1), multiSymSfx)); // PFX 00-7F 80-BF
     ZTF_sym = pb.createOr(ZTF_sym, pb.createAnd(pb.createAdvance(pfx2, 2), ASCII)); // PFX 00-7F 00-7F
@@ -331,6 +362,7 @@ void ZTF_Phrases::generatePabloMethod() {
 
     // runs are the bytes after a start symbol until the next symStart byte.
     pablo::PabloAST * runs = pb.createInFile(pb.createNot(symStart));
+    runs = pb.createOr3(runs, removeFollowingSymStart, removePrecedingSymStart);
     pb.createAssign(pb.createExtract(getOutputStreamVar("phraseRuns"), pb.getInteger(0)), runs);
 }
 

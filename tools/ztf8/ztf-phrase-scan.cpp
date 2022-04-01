@@ -69,7 +69,7 @@ MarkRepeatedHashvalue::MarkRepeatedHashvalue(BuilderRef b,
                     InternalScalar{ArrayType::get(b->getInt8Ty(), phraseHashTableSize(encodingScheme.byLength[groupNo])), "freqTable"},
                     InternalScalar{ArrayType::get(ArrayType::get(b->getInt8Ty(), encodingScheme.byLength[groupNo].hi), phraseHashTableSize(encodingScheme.byLength[groupNo])), "segmentHashTable"},
                     InternalScalar{ArrayType::get(b->getInt8Ty(), phraseHashTableSize(encodingScheme.byLength[groupNo])), "segmentFreqTable"}}),
-mEncodingScheme(encodingScheme), mGroupNo(groupNo), mNumSym(numSyms), mOffset(offset), mSubStride(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS)) {
+mEncodingScheme(encodingScheme), mGroupNo(groupNo), mNumSym(numSyms), mSubStride(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS)), mOffset(offset) {
     if (DelayedAttributeIsSet()) {
         mOutputStreamSets.emplace_back("hashMarks", hashMarks, FixedRate(), Delayed(encodingScheme.maxSymbolLength()) );
         // mOutputStreamSets.emplace_back("dictPhraseEndBitMask", dictPhraseEndBitMask, FixedRate(), Delayed(encodingScheme.maxSymbolLength()) );
@@ -397,17 +397,11 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     Value * sym22 = b->CreateAlignedLoad(symPtr22, 1);
     Value * entry11 = b->CreateMonitoredScalarFieldLoad("hashTable", symTblPtr1);
     Value * entry22 = b->CreateMonitoredScalarFieldLoad("hashTable", symTblPtr2);
-    Value * symCountEntry = b->CreateMonitoredScalarFieldLoad("freqTable", freqTblPtr1);
 
     Value * symIsEqEntry1 = b->CreateAnd(b->CreateICmpEQ(entry11, sym11), b->CreateICmpEQ(entry22, sym22));
     b->CreateCondBr(symIsEqEntry1, markSymCompression, nextSym);
 
-    // b->SetInsertPoint(tryMarkCompression);
-    // b->CreateCondBr(b->CreateICmpUGE(symCountEntry, b->getInt8(0x2)), markSymCompression, nextSym);
-
     b->SetInsertPoint(markSymCompression);
-    // Value * updateSymCount = b->CreateSelect(b->CreateICmpEQ(symCountEntry, b->getInt8(0xFF)), symCountEntry, b->CreateAdd(symCountEntry, b->getInt8(0x1)));
-    // b->CreateMonitoredScalarFieldStore("segmentFreqTable", updateSymCount, freqTblPtr1);
     // Mark the last bit of phrase
     Value * phraseMarkBase = b->CreateSub(symMarkPos, b->CreateURem(symMarkPos, sz_BITS));
     Value * markOffset = b->CreateSub(symMarkPos, phraseMarkBase);
@@ -528,7 +522,6 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
     BasicBlock * const subStrideMaskPrep = b->CreateBasicBlock("subStrideMaskPrep");
     BasicBlock * const strideMasksReady = b->CreateBasicBlock("strideMasksReady");
     BasicBlock * const keyProcessingLoop = b->CreateBasicBlock("keyProcessingLoop");
-    BasicBlock * const tryStore = b->CreateBasicBlock("tryStore");
     BasicBlock * const storeKey = b->CreateBasicBlock("storeKey");
     BasicBlock * const markCompression = b->CreateBasicBlock("markCompression");
     BasicBlock * const nextKey = b->CreateBasicBlock("nextKey");
@@ -537,7 +530,6 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
     BasicBlock * const stridesDone = b->CreateBasicBlock("stridesDone");
     BasicBlock * const updatePending = b->CreateBasicBlock("updatePending");
     BasicBlock * const compressionMaskDone = b->CreateBasicBlock("compressionMaskDone");
-    BasicBlock * const updateEntry = b->CreateBasicBlock("updateEntry");
 
 #ifdef PRINT_PHRASE_DEBUG_INFO
     // BasicBlock * const writeDebugOutput = b->CreateBasicBlock("writeDebugOutput");
@@ -549,7 +541,6 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
     // accessible -> accessible this segment
     Value * const initialProduced = b->getProducedItemCount("compressionMask");
     Value * const phrasesProduced = b->getProducedItemCount("codewordMask");
-    // b->CallPrintInt("avail-SymbolGroupCompression", avail);
     Value * pendingPhraseMask = b->getScalarField("pendingPhraseMask");
     Value * phrasesProducedPtr = b->CreateBitCast(b->getRawOutputPointer("codewordMask", phrasesProduced), bitBlockPtrTy);
     b->CreateStore(pendingPhraseMask, phrasesProducedPtr);
