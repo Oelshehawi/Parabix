@@ -307,12 +307,22 @@ void ZTF_Phrases::generatePabloMethod() {
         for(unsigned i = 0; i < 3; i++) {
             removePrecedingSymStart = pb.createOr(removePrecedingSymStart, pb.createAnd(possibleSymEnd, pb.createLookahead(possibleSymEnd, i+1)));
         }
+        PabloAST * finalizeMerges = pb.createZeroes();
+        for (unsigned i = 0; i < 3; i++) {
+            finalizeMerges = pb.createOr(finalizeMerges, pb.createAnd(possibleSymEnd, pb.createAdvance(possibleSymStart, i+1)));
+        }
+        removePrecedingSymStart = pb.createXor(removePrecedingSymStart, finalizeMerges);
         // pb.createDebugPrint(removePrecedingSymStart, "removePrecedingSymStart");
     }
     if (mGroup == 2 || mGroup == 3) {
         for (unsigned i = 0; i < 3; i++) {
             removeFollowingSymStart = pb.createOr(removeFollowingSymStart, pb.createAnd(possibleSymStart, pb.createAdvance(possibleSymStart, i+1)));
         }
+        PabloAST * finalizeMerges = pb.createZeroes();
+        for (unsigned i = 0; i < 3; i++) {
+            finalizeMerges = pb.createOr(finalizeMerges, pb.createAnd(possibleSymStart, pb.createLookahead(possibleSymEnd, i+1)));
+        }
+        removeFollowingSymStart = pb.createXor(removeFollowingSymStart, finalizeMerges);
     }
 
     // Find start bytes of word characters.

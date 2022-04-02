@@ -74,7 +74,7 @@ static cl::opt<bool> UseParallelFilterByMask("fbm-p", cl::desc("Use default Filt
 static cl::opt<unsigned> Grouping("g", cl::desc("Experimental symbol grouping techniques"), cl::init(0), cl::cat(ztfHashOptions));
 
 typedef void (*ztfHashFunctionType)(uint32_t fd, const char *, const char *);
-typedef void (*ztfHashDecmpFunctionType)(uint32_t fd);
+// typedef void (*ztfHashDecmpFunctionType)(uint32_t fd);
 // typedef uint32_t (*ztfHashFunctionType)(uint32_t fd, const char *, const char *);
 typedef uint32_t (*ztfHashDecmpFunctionType)(uint32_t fd);
 
