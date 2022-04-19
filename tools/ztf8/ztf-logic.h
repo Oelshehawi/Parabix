@@ -38,13 +38,14 @@ public:
     unsigned lastSuffixBase(unsigned groupNo) const;
     unsigned lastSuffixHashBits(unsigned numSym, unsigned groupNo) const;
     unsigned getSubtableSize(unsigned groupNo) const;
+    unsigned getPhraseExtensionBits(unsigned groupNo, unsigned enc_scheme) const;
     unsigned tableSizeBits(unsigned groupNo) const;
     std::string uniqueSuffix() const;
 };
 
 class WordMarkKernel : public pablo::PabloKernel {
 public:
-    WordMarkKernel(BuilderRef kb, StreamSet * BasisBits, StreamSet * WordMarks, StreamSet * possibleSymStart);
+    WordMarkKernel(BuilderRef kb, StreamSet * BasisBits, StreamSet * WordMarks, StreamSet * possibleSymStart=nullptr);
 protected:
     void generatePabloMethod() override;
 };

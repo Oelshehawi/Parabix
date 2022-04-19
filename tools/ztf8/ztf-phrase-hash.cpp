@@ -72,12 +72,13 @@ static cl::opt<unsigned> PhraseLen("plen", cl::desc("Debug - length of phrase.")
 static cl::opt<unsigned> PhraseLenOffset("offset", cl::desc("Offset to actual length of phrase"), cl::init(1), cl::cat(ztfHashOptions));
 static cl::opt<bool> UseParallelFilterByMask("fbm-p", cl::desc("Use default FilterByMask"), cl::cat(ztfHashOptions), cl::init(false));
 static cl::opt<unsigned> Grouping("g", cl::desc("Experimental symbol grouping techniques"), cl::init(0), cl::cat(ztfHashOptions));
+static cl::opt<unsigned> EncodingScheme("es", cl::desc("Select the encoding scheme to be used"), cl::init(1), cl::cat(ztfHashOptions));
 
 typedef void (*ztfHashFunctionType)(uint32_t fd, const char *, const char *);
 // typedef void (*ztfHashDecmpFunctionType)(uint32_t fd);
 // typedef uint32_t (*ztfHashFunctionType)(uint32_t fd, const char *, const char *);
 typedef uint32_t (*ztfHashDecmpFunctionType)(uint32_t fd);
-
+#if 0
 EncodingInfo encodingScheme1(8,
                              {{3, 3, 2, 0xC0, 8, 0}, //minLen, maxLen, hashBytes, pfxBase, hashBits, length_extension_bits
                               {4, 4, 2, 0xC8, 8, 0},
@@ -85,7 +86,13 @@ EncodingInfo encodingScheme1(8,
                               {9, 16, 3, 0xE0, 8, 0},
                               {17, 32, 4, 0xF0, 8, 0},
                              });
-
+#endif
+EncodingInfo encodingScheme1(8,
+                             {{4, 4, 2, 0xC0, 8, 0},
+                              {5, 8, 2, 0xD0, 8, 0},
+                              {9, 16, 3, 0xE0, 8, 0},
+                              {17, 32, 4, 0xF0, 8, 0},
+                             });
 ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
     auto & b = driver.getBuilder();
     Type * const int32Ty = b->getInt32Ty();
@@ -178,6 +185,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
         unsigned startLgIdx = 0;
         if (sym > 0) {
             startLgIdx = 3;
+            if (encodingScheme1.byLength.size() == 4) startLgIdx = 2;
         }
         std::vector<StreamSet *> symHashMarks;
       //  StreamSet * hashMarksNonFinal = P->CreateStreamSet(1);
@@ -228,6 +236,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
         unsigned startLgIdx = 0;
         if (sym > 0) {
             startLgIdx = 3; //2; k-symbol compressible phrase min length = 9 bytes
+            if (encodingScheme1.byLength.size() == 4) startLgIdx = 2;
         }
         for (unsigned i = startLgIdx; i < encodingScheme1.byLength.size(); i++) {
             StreamSet * const extractionMask = P->CreateStreamSet(1);
@@ -246,7 +255,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
             //Update sym-1 hashMarks to avoid compressing sub-phrases of any of the already compressed phrases
             for (int j = 0; j < sym; j++) {
                 StreamSet * const updatedHashMark = P->CreateStreamSet(1);
-                P->CreateKernelCall<UpdateNextHashMarks>(extractionMask, allHashMarks[j], i, updatedHashMark);
+                P->CreateKernelCall<UpdateNextHashMarks>(encodingScheme1, extractionMask, allHashMarks[j], i, updatedHashMark);
                 allHashMarks[j] = updatedHashMark;
             }
         }
@@ -327,6 +336,7 @@ ztfHashDecmpFunctionType ztfHash_decompression_gen (CPUDriver & driver) {
         unsigned startIdx = 0;
         if (sym > 0) {
             startIdx = 3;
+            if (encodingScheme1.byLength.size() == 4) startIdx = 2;
         }
         for (unsigned i = startIdx; i < n; i++) {
             StreamSet * const hashGroupMarks = P->CreateStreamSet(1);

@@ -33,6 +33,7 @@ using namespace kernel;
 using namespace llvm;
 
 UpdateNextHashMarks::UpdateNextHashMarks(BuilderRef kb,
+                    EncodingInfo & encodingScheme,
                     StreamSet * extractionMask,
                     StreamSet * hashMarksToUpdate,
                     unsigned groupNo,
@@ -40,7 +41,7 @@ UpdateNextHashMarks::UpdateNextHashMarks(BuilderRef kb,
 : PabloKernel(kb, "UpdateNextHashMarks"+std::to_string(groupNo),
             {Binding{"extractionMask", extractionMask},
              Binding{"hashMarksToUpdate", hashMarksToUpdate}},
-            {Binding{"hashMarksUpdated", hashMarksUpdated}}), mGroupNo(groupNo) { }
+            {Binding{"hashMarksUpdated", hashMarksUpdated}}), mEncodingScheme(encodingScheme), mGroupNo(groupNo) { }
 
 void UpdateNextHashMarks::generatePabloMethod() {
     pablo::PabloBuilder pb(getEntryScope());
@@ -54,14 +55,27 @@ void UpdateNextHashMarks::generatePabloMethod() {
     // every compressedMark in compressedMarks has 2/3/4 byte codewords written at the last 2/3/4 bytes of the phrase
     // Advance compressedMarks by 2,3,4 pos and check if any hashMarksToUpdate marked in the codeword position
     unsigned advPos = 0;
-    if (mGroupNo < 3) {
+    if (mEncodingScheme.byLength.size() == 5) {
+        if (mGroupNo < 3) {
         advPos = 2;
+        }
+        else if (mGroupNo == 3) {
+            advPos = 3;
+        }
+        else { //mGroupNo = 4
+            advPos = 4;
+        }
     }
-    else if (mGroupNo == 3) {
-        advPos = 3;
-    }
-    else { //mGroupNo = 4
-        advPos = 4;
+    if (mEncodingScheme.byLength.size() == 4) {
+        if (mGroupNo < 2) {
+            advPos = 2;
+        }
+        else if (mGroupNo == 2) {
+            advPos = 3;
+        }
+        else { //mGroupNo = 4
+            advPos = 4;
+        }
     }
     extractionMask = pb.createAdvance(extractionMask, advPos); // min codeword sequence length
     result = pb.createAnd(result, extractionMask, "result");
@@ -111,7 +125,11 @@ void LengthSelector::generatePabloMethod() {
     Var * selectedHashMarksPosStreamVar = getOutputStreamVar("selectedHashMarksPos");
     std::vector<PabloAST *> groupLenBixnum = getInputStreamSet("groupLenBixnum");
     unsigned offset = mOffset;
-    unsigned lo = mEncodingScheme.minSymbolLength()+6; // min k-sym phrase length = 9 bytes
+    unsigned minSymLenOffset = 6;
+    if (mEncodingScheme.byLength.size() == 4) {
+        minSymLenOffset = 5;
+    }
+    unsigned lo = mEncodingScheme.minSymbolLength()+minSymLenOffset; // min k-sym phrase length = 9 bytes
     unsigned hi = mEncodingScheme.maxSymbolLength();
     unsigned groupSize = hi - lo + 1;
     std::vector<PabloAST *> selectedLengthMarks(groupSize);
@@ -272,8 +290,9 @@ ZTF_PhraseDecodeLengths::ZTF_PhraseDecodeLengths(BuilderRef b,
 void ZTF_PhraseDecodeLengths::generatePabloMethod() {
     PabloBuilder pb(getEntryScope());
     BixNumCompiler bnc(pb);
+    unsigned enc_len = mEncodingScheme.byLength.size();
     std::vector<PabloAST *> basis = getInputStreamSet("basisBits");
-    std::vector<PabloAST *> groupStreams(mNumSym * mEncodingScheme.byLength.size());
+    std::vector<PabloAST *> groupStreams(mNumSym * enc_len);
     PabloAST * hashTableBoundaryCommon = pb.createAnd(pb.createAnd(basis[7], basis[6]), pb.createAnd(basis[5], basis[4])); //Fx
     PabloAST * hashTableBoundaryStartHi = pb.createAnd3(basis[3], basis[2], basis[1]); //xE, xF
     PabloAST * hashTableBoundaryEndHi = pb.createAnd(hashTableBoundaryStartHi, basis[0]); //xF
@@ -305,48 +324,75 @@ void ZTF_PhraseDecodeLengths::generatePabloMethod() {
     PabloAST * suffix_80_BF = pb.createAnd(bnc.UGE(basis, 0x80), bnc.ULE(basis, 0xBF));
     Var * groupStreamVar = getOutputStreamVar("groupStreams");
     Var * hashTableStreamVar = getOutputStreamVar("hashtableStreams");
-    for (unsigned i = 0; i < mEncodingScheme.byLength.size(); i++) {
+    for (unsigned i = 0; i < enc_len; i++) {
         for (unsigned j = 0; j < mNumSym; j++) {
-            unsigned idx = i + (j*mEncodingScheme.byLength.size());
+            unsigned idx = i + (j*enc_len);
             groupStreams[idx] = pb.createZeroes();
         }
         LengthGroupInfo groupInfo = mEncodingScheme.byLength[i];
         unsigned base = groupInfo.prefix_base;
         unsigned next_base = 0;
-        if (i < 2) {
-            next_base = base + 8;
+        if(mEncodingScheme.byLength.size() == 5) {
+            if (i < 2) {
+                next_base = base + 8;
+            }
+            else {
+                next_base = base + 16;
+            }
         }
-        else {
-            next_base = base + 16;
+        if(mEncodingScheme.byLength.size() == 4) {
+            if (i == 0) {
+                next_base = base + 8;
+            }
+            else {
+                next_base = base + 16;
+            }
         }
         PabloAST * inGroup = pb.createAnd(bnc.UGE(basis, base), bnc.ULT(basis, next_base));
-        /* curGroupStream =>
+/*      curGroupStream =>
             0 -> C0-C7 00-7F
             1 -> C8-CF 00-7F
             2 -> D0-DF 00-7F
             3 -> E0-EF 00-7F 00-7F / EO-EF 00-7F 80-BF
             4 -> F0-FF 00-7F 00-7F 00-7F / F0-FF 00-7F 00-7F 80-BF
-        */
+        updated curGroupStream =>
+            0 -> C0-C7 00-7F
+            1 -> C8-DF 00-7F
+            2 -> E0-EF 00-7F 00-7F / EO-EF 00-7F 80-BF
+            3 -> F0-FF 00-7F 00-7F 00-7F / F0-FF 00-7F 00-7F 80-BF
+        encodingScheme1
+            i = 0, 1, 2, 3, 4
+            j = 0, 1
+            idx = 0, 5, 1, 6, 2, 7, 3, 8, 4, 9
+        encodingScheme2
+            i = 0, 1, 2, 3
+            j = 0, 1
+            idx = 0, 4, 1, 5, 2, 6, 3, 7
+*/
         PabloAST * curGroupStream = pb.createAnd(pb.createAdvance(inGroup, 1), ASCII); // PFX 00-7F
         groupStreams[i] = curGroupStream;
         for (unsigned j = 2; j < groupInfo.encoding_bytes; j++) {
             groupStreams[i] = pb.createAnd(pb.createAdvance(groupStreams[i], 1), ASCII);
             if (j+1 == groupInfo.encoding_bytes) {
                 // PFX 00-7F{1,2} 80-BF
-                unsigned idx = i+mEncodingScheme.byLength.size();
+                unsigned idx = i+enc_len;
                 curGroupStream = pb.createAnd(pb.createAdvance(curGroupStream, groupInfo.encoding_bytes-2), suffix_80_BF);
-                if (idx == 9) {
+                if ((mEncodingScheme.byLength.size() == 5 && idx == 9) || 
+                    (mEncodingScheme.byLength.size() == 4 && idx == 7)) {
                     curGroupStream = pb.createAnd(curGroupStream, allInvalidBoundaryCodeword);
                 }
-                groupStreams[i+mEncodingScheme.byLength.size()] = curGroupStream;
+                groupStreams[i+enc_len] = curGroupStream;
                 //pb.createOr(groupStreams[i], curGroupStream);
             }
         }
-        if(i == 4 || i == 9) {
+        if((mEncodingScheme.byLength.size() == 5) && (i == 4 || i == 9)) {
+            groupStreams[i] = pb.createAnd(groupStreams[i], allInvalidBoundaryCodeword);
+        }
+        if((mEncodingScheme.byLength.size() == 4) && (i == 3 || i == 7)) {
             groupStreams[i] = pb.createAnd(groupStreams[i], allInvalidBoundaryCodeword);
         }
     }
-    for (unsigned i = 0; i < (mNumSym * mEncodingScheme.byLength.size()); i++) {
+    for (unsigned i = 0; i < (mNumSym * enc_len); i++) {
         pb.createAssign(pb.createExtract(groupStreamVar, pb.getInteger(i)), pb.createAnd(groupStreams[i], pb.createNot(hashTableSpan)));
         pb.createAssign(pb.createExtract(hashTableStreamVar, pb.getInteger(i)), pb.createAnd(groupStreams[i], pb.createXor(hashtableBoundaries, hashTableSpan)));
     }
@@ -456,8 +502,8 @@ void ProcessCandidateMatches::generatePabloMethod() {
     for (unsigned i = 0; i < mEncodingScheme.byLength.size(); i++) {
         groupStreams[i] = pb.createZeroes();
         LengthGroupInfo groupInfo = mEncodingScheme.byLength[i];
-        unsigned lo = groupInfo.lo;
-        unsigned hi = groupInfo.hi;
+        // unsigned lo = groupInfo.lo;
+        // unsigned hi = groupInfo.hi;
         unsigned base = groupInfo.prefix_base;
         unsigned next_base = 0;
         if (i < 2) {
@@ -624,8 +670,18 @@ void ZTF_PhraseExpansionDecoder::generatePabloMethod() {
         unsigned next_base;
         PabloAST * inGroup = pb.createZeroes();
         PabloAST * groupRange = pb.createZeroes();
-        if (i < 3) {
-            if (i < 2) {
+        unsigned two_byte_cw_end = 3;
+        unsigned pfx_jump_8 = 2;
+        unsigned lookAhead1= 2;
+        unsigned lookAhead2 = 3;
+        if (mEncodingScheme.byLength.size() == 4) {
+            two_byte_cw_end = 2;
+            pfx_jump_8 = 1;
+            lookAhead1 = 1;
+            lookAhead2 = 2;
+        }
+        if (i < two_byte_cw_end) {
+            if (i < pfx_jump_8) {
                 next_base = base + 8;
                 groupRange = pb.createAnd(bnc.UGE(basis, base), bnc.ULT(basis, next_base));
                 inGroup = pb.createOr(inGroup, pb.createAnd(ASCII_lookaheads[0], groupRange));
@@ -646,10 +702,10 @@ void ZTF_PhraseExpansionDecoder::generatePabloMethod() {
         else {
             next_base = base + 16;
             groupRange = pb.createAnd(bnc.UGE(basis, base), bnc.ULT(basis, next_base));
-            PabloAST * lookahead_accum = pb.createOr(ASCII_lookaheads[i-2], sfx_80_BF_lookaheads[i-3]);
+            PabloAST * lookahead_accum = pb.createOr(ASCII_lookaheads[i-lookAhead1], sfx_80_BF_lookaheads[i-lookAhead2]);
             inGroup = pb.createOr(inGroup, pb.createAnd(lookahead_accum, groupRange));
             //pb.createDebugPrint(inGroup, "inGroup["+std::to_string(i)+"]");
-            if (i == 3) {
+            if (i == two_byte_cw_end) {
                 BixNum diff = bnc.SubModular(basis, base); // 0,8; 1,9; 2,10; etc...
                 for (unsigned extractIdx = 0; extractIdx < 3; extractIdx++) {
                     relative[extractIdx] = pb.createOr(relative[extractIdx], diff[extractIdx]);

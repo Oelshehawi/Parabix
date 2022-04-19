@@ -35,15 +35,11 @@ using namespace llvm;
 
 using BuilderRef = Kernel::BuilderRef;
 
-// 1. Count all the phrase occurrences in the first scan of the stride
-//      1.a If any phrase observed with frequency >= 2, mark 1 at the hashMark for that phrase
-//      1.b If there's a collision in hashvalue for any phrase, use collision handling technique (TODO)
-// 2. In the second scan,
-//      2.a If the phrase frequency is >= 2, mark 1 at the hashMark for that phrase
-//      2.b dictPhraseEndBitMask will mark 1 at the hashMark for the first occurrence of a phrase
-//        * Assumes that all the occurrences of the repeated phrases will be marked in the first scan
-//          except the initial occurrence. Hence, dictPhraseEndBitMask shall be safe to use as
-//          a reference for dicitonary phrases.
+// First pass:
+// Create the frequency table for current segment while comparing with global frequency table.
+// replace/update phrases from global table if the frequency of phrase in current segment is more than the frequency in global table.
+// Second pass:
+// Lookup phrases in global table; mark 1-bit at the last byte of the phrase for phrases that have entry in the global table.
 
 MarkRepeatedHashvalue::MarkRepeatedHashvalue(BuilderRef b,
                                                EncodingInfo encodingScheme,
@@ -161,22 +157,8 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     Value * subStrideBlockOffset = b->CreateAdd(strideBlockOffset, b->CreateMul(subStrideNo, sz_BLOCKS_PER_SUB_STRIDE));
     std::vector<Value *> keyMasks = initializeCompressionMasks2(b, sw, sz_BLOCKS_PER_SUB_STRIDE, 1, subStrideBlockOffset, hashMarksPtr, strideMasksReady);
     Value * keyMask = keyMasks[0];
-    // Value * symMask = keyMasks[0];
 
     b->SetInsertPoint(strideMasksReady);
-    // Iterate through key symbols and update the hash table as appropriate.
-    // As symbols are encountered, the hash value is retrieved from the
-    // hashValues stream.   There are then three possibilities:
-    //   1.  The hashTable has no entry for this hash value.
-    //       In this case, the current symbol is copied into the table.
-    //   2.  The hashTable has an entry for this hash value, and
-    //       that entry is equal to the current symbol. Mark the
-    //       symbol's last bit for the corresponding phrase to be compressed later.
-    //       Marker is set for the symbols with freq >= 2.
-    //   3.  The hashTable has an entry for this hash value, but
-    //       that entry is not equal to the current symbol.    Skip the
-    //       symbol. - collision handling to look for next available empty slot.
-    //
     Value * keyWordBasePtr = b->getInputStreamBlockPtr("symEndMarks", sz_ZERO, subStrideBlockOffset);
     keyWordBasePtr = b->CreateBitCast(keyWordBasePtr, sw.pointerTy);
     b->CreateUnlikelyCondBr(b->CreateICmpEQ(keyMask, sz_ZERO), hashTableDone, keyProcessingLoop);

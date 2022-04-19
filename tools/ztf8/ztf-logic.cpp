@@ -80,26 +80,45 @@ unsigned EncodingInfo::prefixLengthOffset(unsigned lgth) const {
 unsigned EncodingInfo::prefixLengthMaskBits(unsigned lgth) const {
     unsigned groupNo = getLengthGroupNo(lgth);
     auto g = byLength[groupNo];
-    switch(groupNo) {
-        case 0: return g.encoding_bytes + 1;
-        case 1: return g.encoding_bytes + 1;
-        case 2: return g.encoding_bytes;
-        case 3: return 1;
-        case 4: return 0;
-        default: return 0;
+    if (byLength.size() == 5) {
+        switch(groupNo) {
+            case 0: return g.encoding_bytes + 1;
+            case 1: return g.encoding_bytes + 1;
+            case 2: return g.encoding_bytes;
+            case 3: return 1;
+            case 4: return 0;
+            default: return 0;
+        }
+    }
+    else {
+        switch(groupNo) {
+            case 0: return g.encoding_bytes + 1;
+            case 1: return g.encoding_bytes;
+            case 2: return 1;
+            case 3: return 0;
+            default: return 0;
+        }
     }
 }
 
 unsigned EncodingInfo::lastSuffixBase(unsigned groupNo) const {
-    if(groupNo > 2) {
+    if (byLength.size() == 5 && groupNo > 2) {
+        return 128;
+    }
+    if (byLength.size() == 4 && groupNo > 1) {
         return 128;
     }
     return 0;
 }
 
 unsigned EncodingInfo::lastSuffixHashBits(unsigned numSym, unsigned groupNo) const {
-    if (numSym > 0 && groupNo > 2) {
-        return 6;
+    if (numSym > 0) {
+        if (byLength.size() == 5 && groupNo > 2) {
+            return 6;
+        }
+        if (byLength.size() == 4 && groupNo > 1) {
+            return 6;
+        }
     }
     return 7;
 }
@@ -112,15 +131,33 @@ unsigned EncodingInfo::getSubtableSize(unsigned groupNo) const {
     }
     return subtables * (1UL << (g.hash_bits + g.encoding_bytes)) * g.hi;
 }
+
+unsigned EncodingInfo::getPhraseExtensionBits(unsigned groupNo, unsigned enc_scheme) const {
+    auto g = byLength[groupNo];
+    if (enc_scheme == 5)
+        return std::min(g.hi - g.lo, groupNo);
+    return std::min(g.hi - g.lo, groupNo+1);
+}
  
 unsigned EncodingInfo::tableSizeBits(unsigned groupNo) const {
-    switch(groupNo) {
-        case 0: return 13;
-        case 1: return 14;
-        case 2: return 14;
-        case 3: return 15;
-        case 4: return 17;
-        default: return 0;
+    if (byLength.size() == 5) {
+        switch(groupNo) {
+            case 0: return 13;
+            case 1: return 14;
+            case 2: return 14;
+            case 3: return 15;
+            case 4: return 17;
+            default: return 0;
+        }
+    }
+    else {
+        switch(groupNo) {
+            case 0: return 14;
+            case 1: return 14;
+            case 2: return 15;
+            case 3: return 17;
+            default: return 0;
+        }
     }
 }
 

@@ -18,12 +18,14 @@ namespace kernel {
 class UpdateNextHashMarks : public pablo::PabloKernel {
 public:
     UpdateNextHashMarks(BuilderRef kb,
+                EncodingInfo & encodingScheme,
                 StreamSet * extractionMask,
                 StreamSet * hashMarksToUpdate,
                 unsigned groupNo,
                 StreamSet * hashMarksUpdated);
 protected:
     void generatePabloMethod() override;
+    EncodingInfo & mEncodingScheme;
     unsigned mGroupNo;
 };
 
