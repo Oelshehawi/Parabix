@@ -855,8 +855,7 @@ FilterCompressedData::FilterCompressedData(BuilderRef b,
                    {Binding{"phraseMask", combinedMask},
                     Binding{"symEndMarker", symEndMarker},
                     Binding{"byteData", byteData, FixedRate(), LookBehind(33)}},
-                   {}, {}, {},
-                   {InternalScalar{b->getBitBlockType(), "pendingMaskInverted"}}),
+                   {}, {}, {},{}),
 mSubStride(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS)) {
     if (DelayedAttributeIsSet()) {
         mOutputStreamSets.emplace_back("cmpBytes", cmpBytes, BoundedRate(0, 1)/*PopcountOf("phraseMask")*/);
@@ -1008,8 +1007,6 @@ void FilterCompressedData::generateMultiBlockLogic(BuilderRef b, Value * const n
     b->CreateStore(b->CreateTrunc(b->CreateSelect(b->isFinal(), segWritePosUpdate, b->CreateAdd(nextFullPhraseEndPos, sz_ONE) /* +1 for the next writable position*/ ), b->getInt64Ty()), b->getRawOutputPointer("partialSum", segProcessed));
     // Value * symPtr2 = b->CreateBitCast(b->getRawOutputPointer("cmpBytes", b->CreateSub(nextFullPhraseEndPos, b->getSize(3))), b->getInt8PtrTy());
     // b->CreateWriteCall(b->getInt32(STDERR_FILENO), symPtr2, b->CreateAdd(b->getSize(3), sz_ONE));
-    // b->CallPrintInt("nextFullPhraseEndPos", nextFullPhraseEndPos);
-
     b->CreateCondBr(b->CreateICmpNE(nextStrideNo, numOfStrides), stridePrologue, stridesDone);
     b->SetInsertPoint(stridesDone);
     // Value * processedBytes = b->CreateSelect(b->isFinal(), avail, b->CreateSub(phraseWordPos, b->CreateSub(segWritePosUpdate, nextFullPhraseEndPos)));
@@ -1041,16 +1038,17 @@ WriteDictionary::WriteDictionary(BuilderRef b,
                     Binding{"byteData", byteData, FixedRate(), LookBehind(33)},
                     Binding{"codedBytes", codedBytes, FixedRate(), LookBehind(33)},
                     Binding{"lengthData", allLenHashValues, FixedRate(), LookBehind(33)}},
-                   {}, {}, {},
-                   {InternalScalar{b->getBitBlockType(), "pendingMaskInverted"},
-                    InternalScalar{b->getBitBlockType(), "pendingPhraseMask"}}),
-mNumSym(numSyms), mSubStride(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS)) {
+                   {}, {}, {}, {}),
+mEncodingScheme(encodingScheme), mNumSym(numSyms), mSubStride(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS)) {
     if (DelayedAttributeIsSet()) {
         mOutputStreamSets.emplace_back("dictionaryBytes", dictionaryBytes, BoundedRate(0, 1));
         mOutputStreamSets.emplace_back("dictPartialSum", dictPartialSum, FixedRate(ProcessingRate::Rational{1, 1048576}), Delayed(1));
+        addInternalScalar(ArrayType::get(b->getInt8Ty(), encodingScheme.maxSymbolLength()), "pendingPhrase");
+        addInternalScalar(ArrayType::get(b->getInt8Ty(), encodingScheme.maxEncodingBytes()), "pendingCodeword");
+        addInternalScalar(b->getInt8Ty(), "pendingPhraseLen");
+        addInternalScalar(b->getInt8Ty(), "pendingCodewordLen");
     } else {
         mOutputStreamSets.emplace_back("dictionaryBytes", dictionaryBytes, BoundedRate(0,1));
-        addInternalScalar(ArrayType::get(b->getInt8Ty(), encodingScheme.maxSymbolLength()), "pendingOutput");
     }
     setStride(1048576);
 }
@@ -1108,6 +1106,11 @@ void WriteDictionary::generateMultiBlockLogic(BuilderRef b, Value * const numOfS
     BasicBlock * const updatePending = b->CreateBasicBlock("updatePending");
     BasicBlock * const compressionMaskDone = b->CreateBasicBlock("compressionMaskDone");
     BasicBlock * const checkFinalLoopCond = b->CreateBasicBlock("checkFinalLoopCond");
+    BasicBlock * const writePendingPhrase = b->CreateBasicBlock("writePendingPhrase");
+    BasicBlock * const pendingPhraseWritten = b->CreateBasicBlock("pendingPhraseWritten");
+    BasicBlock * const writePendingCodeword = b->CreateBasicBlock("writePendingCodeword");
+    BasicBlock * const pendingCodewordWritten = b->CreateBasicBlock("pendingCodewordWritten");
+    BasicBlock * const storeInPending = b->CreateBasicBlock("storeInPending");
 
 #ifdef PRINT_PHRASE_DEBUG_INFO
     // BasicBlock * const writeDebugOutput = b->CreateBasicBlock("writeDebugOutput");
@@ -1208,13 +1211,22 @@ void WriteDictionary::generateMultiBlockLogic(BuilderRef b, Value * const numOfS
 
     Value * cwLenInit = b->getSize(2);
     cwLenInit = b->CreateSelect(b->CreateICmpUGT(phraseLengthFinal, b->getSize(8)), b->CreateAdd(cwLenInit, sz_ONE), cwLenInit);
-    Value * const codeWordLen = b->CreateSelect(b->CreateICmpUGT(phraseLengthFinal, b->getSize(16)), b->CreateAdd(cwLenInit, sz_ONE), cwLenInit, "codeWordLen");
+    Value * codeWordLen = b->CreateSelect(b->CreateICmpUGT(phraseLengthFinal, b->getSize(16)), b->CreateAdd(cwLenInit, sz_ONE), cwLenInit, "codeWordLen");
     // Write phrase followed by codeword
     Value * codeWordStartPos =  b->CreateSub(phraseMarkPosFinal, b->CreateSub(codeWordLen, sz_ONE));
+    // Add pending phrase and codeword length
+    phraseLengthFinal = b->CreateAdd(b->CreateZExt(b->getScalarField("pendingPhraseLen"), sizeTy), phraseLengthFinal);
+    codeWordLen = b->CreateAdd(b->CreateZExt(b->getScalarField("pendingCodewordLen"), sizeTy), codeWordLen);
     Value * const checkStartBoundary = b->CreateICmpEQ(subStrideWritePos, segWritePosPhi); // beginning of each 1MB stride
 
+    b->CreateCondBr(b->CreateICmpEQ(phraseMarkPosFinal, b->CreateAdd(stridePos, sz_STRIDE)), storeInPending, writeHTStart);
+    b->SetInsertPoint(storeInPending);
+    b->CreateMemCpy(b->getScalarFieldPtr("pendingPhrase"), b->getRawInputPointer("byteData", phraseStartPos), phraseLengthFinal, 1);
+    b->setScalarField("pendingPhraseLen", b->CreateZExtOrTrunc(phraseLengthFinal, b->getInt8Ty()));
+    b->CreateMemCpy(b->getScalarFieldPtr("pendingCodeword"), b->getRawInputPointer("codedBytes", codeWordStartPos), codeWordLen, 1);
+    b->setScalarField("pendingCodewordLen", b->CreateZExtOrTrunc(codeWordLen, b->getInt8Ty()));
+    b->CreateBr(nextPhrase);
     // Write initial hashtable boundary "fefe"; start boundary written only if the segment contains dictionary entry
-    b->CreateBr(writeHTStart);
     b->SetInsertPoint(writeHTStart);
     PHINode * const curWritePos = b->CreatePHI(sizeTy, 2);
     PHINode * const loopIdx = b->CreatePHI(sizeTy, 2);
@@ -1222,12 +1234,14 @@ void WriteDictionary::generateMultiBlockLogic(BuilderRef b, Value * const numOfS
     loopIdx->addIncoming(sz_ZERO, dictProcessingLoop);
 
     Value * writeLen = sz_TWO;
-    writeLen = b->CreateSelect(b->CreateICmpEQ(loopIdx, sz_ONE), phraseLengthFinal, writeLen);
-    writeLen = b->CreateSelect(b->CreateICmpEQ(loopIdx, sz_TWO), codeWordLen, writeLen);
+    writeLen = b->CreateSelect(b->CreateICmpEQ(loopIdx, sz_ONE), b->CreateZExt(b->getScalarField("pendingPhraseLen"), sizeTy), writeLen);
+    writeLen = b->CreateSelect(b->CreateICmpEQ(loopIdx, sz_TWO), b->CreateZExt(b->getScalarField("pendingCodewordLen"), sizeTy), writeLen);
+    writeLen = b->CreateSelect(b->CreateICmpEQ(loopIdx, b->getSize(3)), b->CreateSub(phraseLengthFinal, b->CreateZExt(b->getScalarField("pendingPhraseLen"), sizeTy)), writeLen);
+    writeLen = b->CreateSelect(b->CreateICmpEQ(loopIdx, b->getSize(4)), b->CreateSub(codeWordLen, b->CreateZExt(b->getScalarField("pendingCodewordLen"), sizeTy)), writeLen);
     writeLen = b->CreateSelect(checkStartBoundary, writeLen, sz_ZERO);
     Value * nextLoopIdx = b->CreateAdd(loopIdx, sz_ONE);
     Value * updateWritePos = b->CreateAdd(curWritePos, writeLen);
-    Value * maxLoopIdx = b->getSize(3);
+    Value * maxLoopIdx = b->getSize(5);
     // b->CallPrintInt("loopIdx", loopIdx);
     // b->CallPrintInt("writeLen", writeLen);
     b->CreateCondBr(b->CreateAnd(checkStartBoundary, b->CreateICmpEQ(loopIdx, sz_ZERO)), writeFEFE, FEFEDone);
@@ -1242,11 +1256,26 @@ void WriteDictionary::generateMultiBlockLogic(BuilderRef b, Value * const numOfS
     b->CreateBr(FEFEDone);
     // Write start boundary
     b->SetInsertPoint(FEFEDone);
-    b->CreateCondBr(b->CreateAnd(checkStartBoundary, b->CreateICmpEQ(loopIdx, sz_ONE)), firstPhrase, firstPhraseDone);
-    b->SetInsertPoint(firstPhrase);
-    // b->CallPrintInt("curWritePos-firstPhrase", curWritePos);
-    b->CreateMemCpy(b->getRawOutputPointer("dictionaryBytes", curWritePos), b->getRawInputPointer("byteData", phraseStartPos), phraseLengthFinal, 1);
+    b->CreateCondBr(b->CreateAnd(checkStartBoundary, b->CreateICmpEQ(loopIdx, sz_ONE)), writePendingPhrase, pendingPhraseWritten);
+    b->SetInsertPoint(writePendingPhrase);
+    b->CreateMemCpy(b->getRawOutputPointer("dictionaryBytes", curWritePos), b->getScalarFieldPtr("pendingPhrase"), b->getScalarField("pendingPhraseLen"), 1);
+    b->CreateMemZero(b->getScalarFieldPtr("pendingPhrase"), b->getSize(mEncodingScheme.maxSymbolLength()));
+    b->CreateBr(pendingPhraseWritten);
 
+    b->SetInsertPoint(pendingPhraseWritten);
+    b->CreateCondBr(b->CreateAnd(checkStartBoundary, b->CreateICmpEQ(loopIdx, sz_TWO)), writePendingCodeword, pendingCodewordWritten);
+    b->SetInsertPoint(writePendingCodeword);
+    b->CreateMemCpy(b->getRawOutputPointer("dictionaryBytes", curWritePos), b->getScalarFieldPtr("pendingCodeword"), b->getScalarField("pendingCodewordLen"), 1);
+    b->CreateMemZero(b->getScalarFieldPtr("pendingCodeword"), b->getSize(mEncodingScheme.maxEncodingBytes()));
+    b->CreateBr(pendingCodewordWritten);
+
+    b->SetInsertPoint(pendingCodewordWritten);
+    b->CreateCondBr(b->CreateAnd(checkStartBoundary, b->CreateICmpEQ(loopIdx, b->getSize(3))), firstPhrase, firstPhraseDone);
+    b->SetInsertPoint(firstPhrase);
+    b->CreateMemCpy(b->getRawOutputPointer("dictionaryBytes", curWritePos), 
+                    b->getRawInputPointer("byteData", phraseStartPos),
+                    b->CreateSub(phraseLengthFinal, b->CreateZExt(b->getScalarField("pendingPhraseLen"), sizeTy)), 1);
+    b->setScalarField("pendingPhraseLen", b->getInt8(0));
 #ifdef PRINT_PHRASE_DEBUG_INFO
     // b->CreateCondBr(b->CreateICmpEQ(phraseLengthFinal, sz_PLEN), writeDebugOutput, firstPhraseDone);
     // b->SetInsertPoint(writeDebugOutput);
@@ -1274,12 +1303,12 @@ void WriteDictionary::generateMultiBlockLogic(BuilderRef b, Value * const numOfS
     b->CreateBr(firstPhraseDone);
     // Write phrase
     b->SetInsertPoint(firstPhraseDone);
-    b->CreateCondBr(b->CreateAnd(checkStartBoundary, b->CreateICmpEQ(loopIdx, sz_TWO)), firstCodeword, firstCodewordDone);
+    b->CreateCondBr(b->CreateAnd(checkStartBoundary, b->CreateICmpEQ(loopIdx, b->getSize(4))), firstCodeword, firstCodewordDone);
     b->SetInsertPoint(firstCodeword);
-    // b->CallPrintInt("curWritePos-firstCodeword", curWritePos);
-    // Value * symPtr2 = b->CreateBitCast(b->getRawInputPointer("codedBytes", codeWordStartPos), halfSymPtrTy);
-    // b->CreateWriteCall(b->getInt32(STDOUT_FILENO), symPtr2, codeWordLen);
-    b->CreateMemCpy(b->getRawOutputPointer("dictionaryBytes", curWritePos), b->getRawInputPointer("codedBytes", codeWordStartPos), codeWordLen, 1);
+    b->CreateMemCpy(b->getRawOutputPointer("dictionaryBytes", curWritePos), 
+                    b->getRawInputPointer("codedBytes", codeWordStartPos), 
+                    b->CreateSub(codeWordLen, b->CreateZExt(b->getScalarField("pendingCodewordLen"), sizeTy)), 1);
+    b->setScalarField("pendingCodewordLen", b->getInt8(0));
     b->CreateBr(firstCodewordDone);
     // Write codeword
     b->SetInsertPoint(firstCodewordDone);
@@ -1443,7 +1472,7 @@ void WriteDictionary::generateMultiBlockLogic(BuilderRef b, Value * const numOfS
     // b->CallPrintInt("producedByteOffset", producedByteOffset);
 
     // Write the produced dictionary count to integer-stream
-    Value * segProcessed = b->CreateAdd(initialPos, b->CreateMul(sz_STRIDE, strideNo));
+    Value * segProcessed = b->CreateAdd(initialPos, b->CreateMul(sz_STRIDE, strideNo)); // stridePos
     segProcessed = b->CreateUDiv(segProcessed, sz_STRIDE);
     // b->CallPrintInt("segProcessed", segProcessed);
     b->CreateStore(b->CreateTrunc(segWritePosUpdate, b->getInt64Ty()), b->getRawOutputPointer("dictPartialSum", segProcessed));

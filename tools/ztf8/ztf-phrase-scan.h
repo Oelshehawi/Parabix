@@ -110,6 +110,7 @@ public:
                     unsigned strideBlocks = 8);
 private:
     void generateMultiBlockLogic(BuilderRef iBuilder, llvm::Value * const numOfStrides) override;
+    const EncodingInfo mEncodingScheme;
     const unsigned mNumSym;
     const unsigned mSubStride;
 };
