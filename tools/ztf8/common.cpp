@@ -83,12 +83,19 @@ unsigned hashTableSize(LengthGroupInfo g) {
     return numSubTables * g.hi * (1<<g.hash_bits);
 }
 
-unsigned phraseHashSubTableSize(EncodingInfo encodingScheme , unsigned groupNo) {
+unsigned phraseHashSubTableSize(EncodingInfo encodingScheme, unsigned groupNo) {
     LengthGroupInfo g = encodingScheme.byLength[groupNo];
-    unsigned shift_bits = std::min(3UL, encodingScheme.byLength.size() - groupNo);
+    unsigned shift_bits = encodingScheme.byLength.size() - (groupNo + 1);
     unsigned pfx_avail = 1U << shift_bits;
-    return pfx_avail * (1UL << 6);
-
+    unsigned suffix_space = 1UL << 7;
+    unsigned subTblSize = 1;
+    unsigned e_bytes = g.encoding_bytes;
+    unsigned enc_bytes = std::min(2U, e_bytes-1);
+    for(unsigned i = 0; i < enc_bytes; i++) {
+        subTblSize *= suffix_space;
+    }
+    // llvm::errs() << "g.lo " << g.lo << " pfx_avail * subTblSize -> " << pfx_avail * subTblSize << "\n";
+    return pfx_avail * subTblSize;
 }
 unsigned phraseHashTableSize(LengthGroupInfo g) {
     // llvm::errs() << "lo " << g.lo << "phraseHashTableSize " <<  g.hi * (1<<(g.hash_bits + g.encoding_bytes)) << "\n";

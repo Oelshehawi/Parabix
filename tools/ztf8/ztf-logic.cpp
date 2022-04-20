@@ -124,17 +124,31 @@ unsigned EncodingInfo::lastSuffixHashBits(unsigned numSym, unsigned groupNo) con
 }
 
 unsigned EncodingInfo::getSubtableSize(unsigned groupNo) const {
-    auto g = byLength[groupNo];
-    return (1UL << (g.hash_bits + g.encoding_bytes)) * g.hi;
+    LengthGroupInfo g = byLength[groupNo];
+    unsigned shift_bits = byLength.size() - (groupNo + 1);
+    unsigned pfx_avail = 1U << shift_bits;
+    unsigned suffix_space = 1UL << 7;
+    unsigned subTblSize = 1;
+    unsigned e_bytes = g.encoding_bytes;
+    unsigned enc_bytes = std::min(2U, e_bytes-1);
+    for(unsigned i = 0; i < enc_bytes; i++) {
+        subTblSize *= suffix_space;
+    }
+    return pfx_avail * subTblSize * g.hi;
 }
 
-unsigned EncodingInfo::getFreqSubtableSize(unsigned groupNo) const { // unused
-    auto g = byLength[groupNo];
-    unsigned subtables = 1;
-    if ((g.hi - g.lo) < 4) {
-        subtables = 5;
+unsigned EncodingInfo::getFreqSubtableSize(unsigned groupNo) const {
+    LengthGroupInfo g = byLength[groupNo];
+    unsigned shift_bits = byLength.size() - (groupNo + 1);
+    unsigned pfx_avail = 1U << shift_bits;
+    unsigned suffix_space = 1UL << 7;
+    unsigned subTblSize = 1;
+    unsigned e_bytes = g.encoding_bytes;
+    unsigned enc_bytes = std::min(2U, e_bytes-1);
+    for(unsigned i = 0; i < enc_bytes; i++) {
+        subTblSize *= suffix_space;
     }
-    return subtables * (1UL << (g.hash_bits + g.encoding_bytes));
+    return pfx_avail * subTblSize;
 }
 
 unsigned EncodingInfo::getPhraseExtensionBits(unsigned groupNo, unsigned enc_scheme) const {
@@ -157,10 +171,10 @@ unsigned EncodingInfo::tableSizeBits(unsigned groupNo) const {
     }
     else {
         switch(groupNo) {
-            case 0: return 12;
-            case 1: return 13;
-            case 2: return 14;
-            case 3: return 15;
+            case 0: return 10;//12;
+            case 1: return 9;//12;
+            case 2: return 15;//19;
+            case 3: return 14;//19;
             default: return 0;
         }
     }
