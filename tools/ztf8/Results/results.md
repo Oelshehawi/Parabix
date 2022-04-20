@@ -24,7 +24,7 @@ Compression results on an extensively diverse set of Wikibooks files.
 |Chinese   | 19.5651   | 14.5817              | 1.8406         | 5.064      |0.704                     |
 |All-wiki  | 619.79    | 554.81               | 4.0436         | 148.873    |14.191                    |
 
-1. Using scalable hashtable
+2. Using scalable hashtable
 * Min-max symbol length: 3-32 bytes
 * Git commit SHA: 30e3dede9405064973af836fde2ce153df0e4b8b
 
@@ -48,7 +48,7 @@ Compression results on an extensively diverse set of Wikibooks files.
 |All-wiki  | 619.79    | 539.53               | 12.505         |
 
 
-1. Using weighted selection of hashtable entries
+3. Using weighted selection of hashtable entries
 * Min-max symbol length: 3-32 bytes
 * Segment size - 1048576 (1024^2) bytes
 * Git commit SHA: 500bdbd03ab46b325a5dd70335d2fe35b618d5f7
@@ -91,3 +91,155 @@ Decompression time (sec)
 |0.255 |0.199 |0.110|
 |0.313 |0.264 |0.149|
 |3.823 |6.459 |0.924|
+
+================================================================================================================================================================
+
+After mostly ALL compression bug fixes:
+
+* with encoding scheme 1
+
+|size  | file       |
+|-----:|-----------:|
+|  13M | arwiki.z   |
+| 132M | dewiki.z   |
+| 9.9M | elwiki.z   |
+|  48M | eswiki.z   |
+|  11M | fawiki.z   |
+|  13M | fiwiki.z   |
+|  57M | frwiki.z   |
+| 9.6M | idwiki.z   |
+|  49M | jawiki.z   |
+|  11M | kowiki.z   |
+|  34M | ruwiki.z   |
+| 9.7M | thwiki.z   |
+| 8.3M | trwiki.z   |
+| 7.1M | viwiki.z   |
+|  15M | zhwiki.z   |
+| 445M | wiki-all.z |
+
+================================================================================================================================================================
+
+* with encoding scheme 2
+
+|size  | file       |
+|-----:|-----------:|
+|  13M | arwiki.z   |
+| 133M | dewiki.z   |
+| 9.9M | elwiki.z   |
+|  48M | eswiki.z   |
+|  11M | fawiki.z   |
+|  14M | fiwiki.z   |
+|  58M | frwiki.z   |
+| 9.7M | idwiki.z   |
+|  49M | jawiki.z   |
+|  11M | kowiki.z   |
+|  34M | ruwiki.z   |
+| 9.8M | thwiki.z   |
+| 8.3M | trwiki.z   |
+| 7.2M | viwiki.z   |
+|  16M | zhwiki.z   |
+| 446M | wiki-all.z |
+
+Decompression failure:
+
+* cprabhu@cs-osl-11:~/parabix-devel/build-debug$ diff /home/cameron/Wikibooks/dewikibooks-20141216-pages-articles.xml dewiki-orig | more
+3373413c3373413
+`< {{:Staatsbürgerkunde Deutschland/ Vorlage:Include|Staatsbürgerkunde Deutschland/ Geschichte/ Deutsche Teilung|A}}`
+---
+`> {{:Staatsbürgerkunde Deutschland/ Vorlage:Include|?;?Geschichte/ Deutsche Teilung|A}}`
+
+* cprabhu@cs-osl-11:~/parabix-devel/build-debug$ diff /home/cameron/Wikibooks/jawikibooks-20150103-pages-articles.xml jawiki-orig | more
+38876,38877c38876,38877
+`<     <ns>0</ns>`
+`<     <id>1609</id>`
+---
+`> e   <ns>0</ns>`
+`> e   <id>1609</id>`
+
+================================================================================================================================================================
+
+3. With updated table size:
+
+* 4 -> phraseHashTableSize 4096 * 4 * 1 = 16384
+* 5-8 -> phraseHashTableSize 8192 * 8 * 4 = 262144
+* 9-16 -> phraseHashTableSize 32768 * 16 * 8 = 4194304
+* 17-32 -> phraseHashTableSize 131072 * 32 * 16 = 67108864
+
+| mGroupNo | hashTableSz | freqTableSz |
+|---------:|------------:|------------:|
+|   0      |  16384      |  4096       |
+|   1      |  262144     |  32768      |
+|   2      |  4194304    |  262144     |
+|   3      |  67108864   |  2097152    |
+
+|size  | file       |
+|-----:|-----------:|
+|  13M | arwiki.z   |
+| 135M | dewiki.z   |
+|  11M | elwiki.z   |
+|  70M | enwiki.z   |
+|  49M | eswiki.z   |
+|  11M | fawiki.z   |
+|  14M | fiwiki.z   |
+|  58M | frwiki.z   |
+| 9.4M | idwiki.z   |
+|  48M | jawiki.z   |
+|  11M | kowiki.z   |
+|  35M | ruwiki.z   |
+| 9.7M | thwiki.z   |
+| 8.5M | trwiki.z   |
+| 7.0M | viwiki.z   |
+|  15M | zhwiki.z   |
+| 449M | wiki-all.z |
+
+================================================================================================================================================================
+
+4. Further optimize hash-table size:
+
+|GroupNo | index space/ length | avail index table size          | Required table size               |  Required sub table size | SUB_TABLE_IDX_MASK_BITS  |
+|-------:|--------------------:|--------------------------------:|----------------------------------:|-------------------------:|-------------------------:|
+|        |                     | (subTbl_idx_space * #subTables) | index_table_size * max_symbol_len |(subTbl_idx_space*max_len)|                          |
+|0       | 8 * 128             | 1024 * 1       =>(1024)         | 1024 * 4 = 4096                   |  4096                    |    10 (1024)             |
+|1       | 4 * 128             | 512 * 4        =>(2048)         | 2048 * 8 = 16384                  |  4096                    |    9  (512)              |
+|2       | 2 * 128 * 128       | 32768 * 8      =>(262144)       | 262144 * 16 = 4194304             |  524288                  |    15 (32768)            |
+|3       | 1 * 128 * 128 * 128 | 2097152 * 16   =>(33554432)     | 33554432 * 32 = 1073741824        |  67108864                |    26 (2097152) -> NO    |
+|3       | 1 * 128 * 128       | 16384 * 16     =>(262144)       | 262144 * 32 = 8388608             |  524288                  |    14 (16384)            |
+
+Old  total table size = 1077.956608 MB -> too much!!
+New total table size = 12.603392 MB
+
+|size  | file       |
+|-----:|-----------:|
+|  12M | arwiki.z   |
+| 120M | dewiki.z   |
+| 9.6M | elwiki.z   |
+|  63M | enwiki.z   |
+|  44M | eswiki.z   |
+| 9.4M | fawiki.z   |
+|  13M | fiwiki.z   |
+|  52M | frwiki.z   |
+| 8.7M | idwiki.z   |
+|  48M | jawiki.z   |
+|  11M | kowiki.z   |
+|  32M | ruwiki.z   |
+| 9.7M | thwiki.z   |
+| 7.9M | trwiki.z   |
+| 6.6M | viwiki.z   |
+|  15M | zhwiki.z   |
+| 417M | wiki-all.z |
+
+Decompression failure:
+
+* cprabhu@cs-osl-11:~/parabix-devel/build-debug$ diff /home/cameron/Wikibooks/dewikibooks-20141216-pages-articles.xml dewiki-orig | more
+3373413c3373413
+`< {{:Staatsbürgerkunde Deutschland/ Vorlage:Include|Staatsbürgerkunde Deutschland/ Geschichte/ Deutsche Teilung|A}}`
+---
+`> {{:Staatsbürgerkunde Deutschland/ Vorlage:Include|?;?Geschichte/ Deutsche Teilung|A}}`
+
+* cprabhu@cs-osl-11:~/parabix-devel/build-debug$ diff /home/cameron/Wikibooks/frwikibooks-20150106-pages-articles.xml frwiki-orig | more
+
+![alt text](diff1.png "frwiki-diff")
+
+================================================================================================================================================================
+
+
