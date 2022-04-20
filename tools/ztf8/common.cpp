@@ -60,6 +60,7 @@ LengthGroupParameters::LengthGroupParameters(BuilderRef b, EncodingInfo encoding
     // All subtables are sized the same.
     SUBTABLE_SIZE(b->getSize((1UL << groupInfo.hash_bits) * groupInfo.hi)),
     PHRASE_SUBTABLE_SIZE(b->getSize(encodingScheme.getSubtableSize(groupNo))),
+    FREQ_SUBTABLE_SIZE(b->getSize(encodingScheme.getFreqSubtableSize(groupNo))),
     HASH_BITS(b->getSize(groupInfo.hash_bits)),
     EXTENDED_BITS(b->getSize(std::max((groupInfo.hash_bits + groupInfo.length_extension_bits), ((groupInfo.encoding_bytes - 1U) * 7U)))),
     PHRASE_EXTENSION_MASK(b->getSize(( 1UL << encodingScheme.getPhraseExtensionBits(groupNo, encodingScheme.byLength.size())) - 1UL)),
@@ -82,17 +83,24 @@ unsigned hashTableSize(LengthGroupInfo g) {
     return numSubTables * g.hi * (1<<g.hash_bits);
 }
 
+unsigned phraseHashSubTableSize(EncodingInfo encodingScheme , unsigned groupNo) {
+    LengthGroupInfo g = encodingScheme.byLength[groupNo];
+    unsigned shift_bits = std::min(3UL, encodingScheme.byLength.size() - groupNo);
+    unsigned pfx_avail = 1U << shift_bits;
+    return pfx_avail * (1UL << 6);
+
+}
 unsigned phraseHashTableSize(LengthGroupInfo g) {
+    // llvm::errs() << "lo " << g.lo << "phraseHashTableSize " <<  g.hi * (1<<(g.hash_bits + g.encoding_bytes)) << "\n";
+    return g.hi * (1<<(g.hash_bits + g.encoding_bytes));
+}
+
+unsigned freqTableSize(LengthGroupInfo g) {
     unsigned numSubTables = (g.hi - g.lo + 1);
-    if (g.hi - g.lo < 4) {
+    if (g.hi - g.lo == 0) {
         numSubTables *= 5;
     }
     return numSubTables * g.hi * (1<<(g.hash_bits + g.encoding_bytes));
-    // 3 * 1024 = 3072 (* 5 = 15360; TABLEMASK = 13bits)
-    // 4 * 1024 = 4096 (* 5 = 20480; TABLEMASK = 14bits)
-    // 8 * 1024 = 8192 (* 5 = 40960; TABLEMASK = 14bits)
-    // 16 * 2048 = 32768; TABLEMASK = 15bits
-    // 32 * 4096 = 131072; TABLEMASK = 17bits
 }
 
 std::string lengthRangeSuffix(EncodingInfo encodingScheme, unsigned lo, unsigned hi) {

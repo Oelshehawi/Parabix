@@ -125,11 +125,16 @@ unsigned EncodingInfo::lastSuffixHashBits(unsigned numSym, unsigned groupNo) con
 
 unsigned EncodingInfo::getSubtableSize(unsigned groupNo) const {
     auto g = byLength[groupNo];
+    return (1UL << (g.hash_bits + g.encoding_bytes)) * g.hi;
+}
+
+unsigned EncodingInfo::getFreqSubtableSize(unsigned groupNo) const { // unused
+    auto g = byLength[groupNo];
     unsigned subtables = 1;
     if ((g.hi - g.lo) < 4) {
         subtables = 5;
     }
-    return subtables * (1UL << (g.hash_bits + g.encoding_bytes)) * g.hi;
+    return subtables * (1UL << (g.hash_bits + g.encoding_bytes));
 }
 
 unsigned EncodingInfo::getPhraseExtensionBits(unsigned groupNo, unsigned enc_scheme) const {
@@ -152,10 +157,10 @@ unsigned EncodingInfo::tableSizeBits(unsigned groupNo) const {
     }
     else {
         switch(groupNo) {
-            case 0: return 14;
-            case 1: return 14;
-            case 2: return 15;
-            case 3: return 17;
+            case 0: return 12;
+            case 1: return 13;
+            case 2: return 14;
+            case 3: return 15;
             default: return 0;
         }
     }
