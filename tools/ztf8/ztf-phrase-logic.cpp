@@ -127,7 +127,7 @@ void LengthSelector::generatePabloMethod() {
     unsigned offset = mOffset;
     unsigned minSymLenOffset = 6;
     if (mEncodingScheme.byLength.size() == 4) {
-        minSymLenOffset = 5;
+        minSymLenOffset = 1;
     }
     unsigned lo = mEncodingScheme.minSymbolLength()+minSymLenOffset; // min k-sym phrase length = 9 bytes
     unsigned hi = mEncodingScheme.maxSymbolLength();
@@ -235,7 +235,7 @@ void OverlappingLookaheadMarkSelect::generatePabloMethod() {
         pb.createAssign(pb.createExtract(lengthwiseHashMarksUpdatesVar, pb.getInteger(i)), lengthwiseHashMarks[i]);
     }
     PabloAST * selected = pb.createZeroes();
-    if (mCurrLen == 9) {
+    if (mCurrLen == mOffset) {
         for (unsigned i = 0; i < lengthwiseHashMarks.size(); i++) {
             selected = pb.createOr(selected, lengthwiseHashMarks[i]);
         }
@@ -331,7 +331,12 @@ void ZTF_PhraseDecodeLengths::generatePabloMethod() {
         }
         LengthGroupInfo groupInfo = mEncodingScheme.byLength[i];
         unsigned base = groupInfo.prefix_base;
+        unsigned base_divided = base;
+        if (i == 1) {
+            base += 8;
+        }
         unsigned next_base = 0;
+        unsigned next_base_divided = 0;
         if(mEncodingScheme.byLength.size() == 5) {
             if (i < 2) {
                 next_base = base + 8;
@@ -347,6 +352,7 @@ void ZTF_PhraseDecodeLengths::generatePabloMethod() {
             else {
                 next_base = base + 16;
             }
+            if (i == 1) next_base_divided = base_divided + 8;
         }
         PabloAST * inGroup = pb.createAnd(bnc.UGE(basis, base), bnc.ULT(basis, next_base));
 /*      curGroupStream =>
@@ -370,6 +376,11 @@ void ZTF_PhraseDecodeLengths::generatePabloMethod() {
             idx = 0, 4, 1, 5, 2, 6, 3, 7
 */
         PabloAST * curGroupStream = pb.createAnd(pb.createAdvance(inGroup, 1), ASCII); // PFX 00-7F
+        if(i == 1) {
+            PabloAST * inGroup_5_8 = pb.createAnd(bnc.UGE(basis, base_divided), bnc.ULT(basis, next_base_divided));
+            PabloAST * curGroupStream_5_8 = pb.createAnd(pb.createAdvance(inGroup_5_8, 1), ASCII);
+            groupStreams[i+enc_len] = curGroupStream_5_8;
+        }
         groupStreams[i] = curGroupStream;
         for (unsigned j = 2; j < groupInfo.encoding_bytes; j++) {
             groupStreams[i] = pb.createAnd(pb.createAdvance(groupStreams[i], 1), ASCII);

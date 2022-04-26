@@ -89,7 +89,7 @@ EncodingInfo encodingScheme1(8,
 #endif
 EncodingInfo encodingScheme1(8,
                              {{4, 4, 2, 0xC0, 8, 0},
-                              {5, 8, 2, 0xD0, 8, 0},
+                              {5, 8, 2, 0xC8, 8, 0},
                               {9, 16, 3, 0xE0, 8, 0},
                               {17, 32, 4, 0xF0, 8, 0},
                              });
@@ -183,19 +183,25 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
     StreamSet * const inputBytes = codeUnitStream;
     for (unsigned sym = 0; sym < SymCount; sym++) {
         unsigned startLgIdx = 0;
+        unsigned endIdx = encodingScheme1.byLength.size();
         if (sym > 0) {
             startLgIdx = 3;
-            if (encodingScheme1.byLength.size() == 4) startLgIdx = 2;
+            if (encodingScheme1.byLength.size() == 4) {
+                startLgIdx = 1;
+            }
         }
         std::vector<StreamSet *> symHashMarks;
-      //  StreamSet * hashMarksNonFinal = P->CreateStreamSet(1);
-        for (unsigned i = startLgIdx; i < encodingScheme1.byLength.size(); i++) { // k-sym phrases length range 5-32
+        StreamSet * hashValues = allHashValues[sym];
+        for (unsigned i = startLgIdx; i < endIdx; i++) { // k-sym phrases length range 5-32
             StreamSet * const groupMarks = P->CreateStreamSet(1);
             P->CreateKernelCall<LengthGroupSelector>(encodingScheme1, i, phraseRuns, phraseLenBixnum[sym], phraseLenOverflow[sym]/*overflow*/, groupMarks, PhraseLenOffset);
             StreamSet * const hashMarks = P->CreateStreamSet(1);
-            P->CreateKernelCall<MarkRepeatedHashvalue>(encodingScheme1, sym, i, PhraseLenOffset, groupMarks, allHashValues[sym], inputBytes, hashMarks);
+            StreamSet * const hashValuesUpdated = P->CreateStreamSet(1, 16);
+            P->CreateKernelCall<MarkRepeatedHashvalue>(encodingScheme1, sym, i, PhraseLenOffset, groupMarks, hashValues, inputBytes, hashMarks, hashValuesUpdated);
             symHashMarks.push_back(hashMarks);
+            hashValues = hashValuesUpdated;
         }
+        allHashValues[sym] = hashValues;
         StreamSet * const combinedSymHashMarks = P->CreateStreamSet(1);
         P->CreateKernelCall<StreamsMerge>(symHashMarks, combinedSymHashMarks);
         // if(sym ==1) {
@@ -206,16 +212,16 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
 
     if (LengthBasedCompression) {
         for (unsigned sym = 1; sym < SymCount; sym++) {
-            StreamSet * const lenSortedHashMarks = P->CreateStreamSet(24);
+            StreamSet * const lenSortedHashMarks = P->CreateStreamSet(28);
             P->CreateKernelCall<LengthSelector>(encodingScheme1, phraseLenBixnum[sym], allHashMarks[sym], lenSortedHashMarks, PhraseLenOffset);
-            StreamSet * lenSortedHashMarksFiltered = P->CreateStreamSet(24);
-            P->CreateKernelCall<LengthBasedHashMarkSelection>(encodingScheme1, 9/*offset*/, 9/*currLen*/, lenSortedHashMarks, lenSortedHashMarksFiltered);
-            for (unsigned i = encodingScheme1.maxSymbolLength(); i >= 9; i--) {
+            StreamSet * lenSortedHashMarksFiltered = P->CreateStreamSet(28);
+            P->CreateKernelCall<LengthBasedHashMarkSelection>(encodingScheme1, 5/*offset*/, 5/*currLen*/, lenSortedHashMarks, lenSortedHashMarksFiltered);
+            for (unsigned i = encodingScheme1.maxSymbolLength(); i >= 5; i--) {
                 StreamSet * const selectedHashMarks = P->CreateStreamSet(1);
-                StreamSet * const lenSortedHashMarksFilteredFinal = P->CreateStreamSet(24);
-                P->CreateKernelCall<OverlappingLookaheadMarkSelect>(i, 9/*offset*/, lenSortedHashMarksFiltered, lenSortedHashMarksFilteredFinal, selectedHashMarks);
+                StreamSet * const lenSortedHashMarksFilteredFinal = P->CreateStreamSet(28);
+                P->CreateKernelCall<OverlappingLookaheadMarkSelect>(i, 5/*offset*/, lenSortedHashMarksFiltered, lenSortedHashMarksFilteredFinal, selectedHashMarks);
                 lenSortedHashMarksFiltered = lenSortedHashMarksFilteredFinal;
-                if (i == 9) {
+                if (i == 5) {
                     // P->CreateKernelCall<DebugDisplayKernel>("selectedHashMarks", selectedHashMarks);
                     allHashMarks[sym] = selectedHashMarks;
                 }
@@ -234,11 +240,14 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
     std::vector<StreamSet *> dictBoundaryMasks;
     for (int sym = SymCount-1; sym >= 0; sym--) {
         unsigned startLgIdx = 0;
+        unsigned endIdx = encodingScheme1.byLength.size();
         if (sym > 0) {
             startLgIdx = 3; //2; k-symbol compressible phrase min length = 9 bytes
-            if (encodingScheme1.byLength.size() == 4) startLgIdx = 2;
+            if (encodingScheme1.byLength.size() == 4) {
+                startLgIdx = 1;
+            }
         }
-        for (unsigned i = startLgIdx; i < encodingScheme1.byLength.size(); i++) {
+        for (unsigned i = startLgIdx; i < endIdx; i++) {
             StreamSet * const extractionMask = P->CreateStreamSet(1);
             StreamSet * const input_bytes = u8bytes;
             StreamSet * const output_bytes = P->CreateStreamSet(1, 8);
@@ -336,7 +345,7 @@ ztfHashDecmpFunctionType ztfHash_decompression_gen (CPUDriver & driver) {
         unsigned startIdx = 0;
         if (sym > 0) {
             startIdx = 3;
-            if (encodingScheme1.byLength.size() == 4) startIdx = 2;
+            if (encodingScheme1.byLength.size() == 4) startIdx = 1;
         }
         for (unsigned i = startIdx; i < n; i++) {
             StreamSet * const hashGroupMarks = P->CreateStreamSet(1);

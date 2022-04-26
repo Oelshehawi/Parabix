@@ -29,9 +29,11 @@ struct ScanWordParameters {
 struct LengthGroupParameters {
     LengthGroupInfo groupInfo;
     Constant * MAX_HASH_BITS;
+    Constant * HASH_SHIFT_BITS;
     Constant * SUFFIX_BITS;
     Constant * SUFFIX_MASK;
     Constant * LAST_SUFFIX_BASE;
+    Constant * LAST_SUFFIX_SHIFT_BITS;
     Constant * LAST_SUFFIX_MASK;
     unsigned const groupHalfLength;
     Type * halfLengthTy;

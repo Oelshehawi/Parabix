@@ -34,8 +34,10 @@ public:
     unsigned minSymbolLength() const;
     unsigned maxEncodingBytes() const;
     unsigned prefixLengthOffset(unsigned lgth) const;
-    unsigned prefixLengthMaskBits(unsigned lgth) const;
+    unsigned prefixLengthMaskBits(unsigned lgth, unsigned numSym) const;
+    unsigned getPfxBase(unsigned groupNo, unsigned numSym) const;
     unsigned lastSuffixBase(unsigned groupNo) const;
+    unsigned lastSuffixShiftBits(unsigned groupNo) const;
     unsigned lastSuffixHashBits(unsigned numSym, unsigned groupNo) const;
     unsigned getSubtableSize(unsigned groupNo) const;
     unsigned getFreqSubtableSize(unsigned groupNo) const;

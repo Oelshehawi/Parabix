@@ -242,4 +242,56 @@ Decompression failure:
 
 ================================================================================================================================================================
 
+5. Phrase indices in hash-table are at multiple of phrase-length
+
+    Value * subTablePtr = b->CreateGEP(hashTableBasePtr, b->CreateMul(b->CreateSub(keyLength, lg.LO), lg.PHRASE_SUBTABLE_SIZE));
+    Value * tableIdxHash = b->CreateAnd(b->CreateLShr(codewordVal, 8), lg.TABLE_MASK, "tableIdx");
+    Value * keyIdxPtr = b->CreateGEP(subTablePtr, b->CreateMul(tableIdxHash, keyLength));
+
+|size (bytes) | size (MB) |file       |
+|------------:|----------:|----------:|
+| 11629706    |   12M     | arwiki.z  |
+|125620528    |  120M     | dewiki.z  |
+| 10044381    |  9.6M     | elwiki.z  |
+| 65105178    |   63M     | enwiki.z  |
+| 45210035    |   44M     | eswiki.z  |
+|  9784518    |  9.4M     | fawiki.z  |
+| 12899371    |   13M     | fiwiki.z  |
+| 53733214    |   52M     | frwiki.z  |
+|  9121376    |  8.7M     | idwiki.z  |
+| 50120383    |   48M     | jawiki.z  |
+| 10891320    |   11M     | kowiki.z  |
+| 33243599    |   32M     | ruwiki.z  |
+| 10131021    |  9.7M     | thwiki.z  |
+|  8218719    |  7.9M     | trwiki.z  |
+|  6860191    |  6.6M     | viwiki.z  |
+| 15320449    |   15M     | zhwiki.z  |
+|436406764    |  417M     | wiki-all.z|
+
+================================================================================================================================================================
+
+6. Compress 2-symbol phrases of length 5-8 bytes.
+
+Prefix space: C8-CF
+Suffix space: 00-7F
+
+|size (bytes) | size (MB) |file       |
+|------------:|----------:|----------:|
+|   11519924  |   11M     | arwiki.z  |
+|  123149235  |  118M     | dewiki.z  |
+|    9898518  |  9.5M     | elwiki.z  |
+|   63580035  |   61M     | enwiki.z  |
+|   44000304  |   42M     | eswiki.z  |
+|    9661844  |  9.3M     | fawiki.z  |
+|   12688318  |   13M     | fiwiki.z  |
+|   52186893  |   50M     | frwiki.z  |
+|    8982705  |  8.6M     | idwiki.z  |
+|   49616282  |   48M     | jawiki.z  |
+|   10804745  |   11M     | kowiki.z  |
+|   32428412  |   31M     | ruwiki.z  |
+|   10063364  |  9.6M     | thwiki.z  |
+|    8092985  |  7.8M     | trwiki.z  |
+|    6685366  |  6.4M     | viwiki.z  |
+|   15135653  |   15M     | zhwiki.z  |
+|  424019887  |  405M     | wiki-all.z|
 
