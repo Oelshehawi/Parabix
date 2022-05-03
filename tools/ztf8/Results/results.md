@@ -295,3 +295,35 @@ Suffix space: 00-7F
 |   15135653  |   15M     | zhwiki.z  |
 |  424019887  |  405M     | wiki-all.z|
 
+================================================================================================================================================================
+
+7. Collision handling and phrase-selection embedded in MarkRepeatedHashvalue kernel
+
+|GroupNo |SUB_TABLE_IDX_MASK_BITS (avail) | SUB_TABLE_IDX_MASK_BITS (used) | SUB_TABLE_IDX_MASK_BITS (free) |
+|-------:|-------------------------------:|-------------------------------:|-------------------------------:|
+|        |                                |                                |                                |
+|0       |   10 (1024)                    |                7               |            3                   |
+|1       |   9  (512)                     |                7               |            2                   |
+|2       |   15 (32768)                   |               14               |            1                   |
+|3       |   14 (16384)                   |               14               |            0                   |
+
+|size (bytes) | size (MB) |file       |
+|------------:|----------:|----------:|
+|   11278724  |  11M      | arwiki.z  |
+|  123944112  | 119M      | dewiki.z  |
+|    9917950  | 9.5M      | elwiki.z  |
+|   64347494  |  62M      | enwiki.z  |
+|   45226867  |  44M      | eswiki.z  |
+|    9895549  | 9.5M      | fawiki.z  |
+|   12898784  |  13M      | fiwiki.z  |
+|   53937601  |  52M      | frwiki.z  |
+|    9229931  | 8.9M      | idwiki.z  |
+|   49974176  |  48M      | jawiki.z  |
+|   10921715  |  11M      | kowiki.z  |
+|   32753905  |  32M      | ruwiki.z  |
+|   10154449  | 9.7M      | thwiki.z  |
+|    8200615  | 7.9M      | trwiki.z  |
+|    7100938  | 6.8M      | viwiki.z  |
+|   15407789  |  15M      | zhwiki.z  |
+|  425668590  | 406M      | wiki-all.z|
+

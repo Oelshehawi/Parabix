@@ -38,6 +38,7 @@ public:
                            unsigned numSyms,
                            unsigned offset,
                            StreamSet * symEndMarks,
+                           StreamSet * cmpMarksSoFar,
                            StreamSet * const hashValues,
                            StreamSet * const byteData,
                            StreamSet * hashMarks,
@@ -144,6 +145,7 @@ private:
 
     const EncodingInfo mEncodingScheme;
     const unsigned mGroupNo;
+    const unsigned mNumSym;
 };
 
 }
