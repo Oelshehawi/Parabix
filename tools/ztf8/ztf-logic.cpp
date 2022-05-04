@@ -121,12 +121,12 @@ unsigned EncodingInfo::lastSuffixBase(unsigned groupNo) const {
 
 unsigned EncodingInfo::lastSuffixShiftBits(unsigned groupNo) const {
     if (byLength.size() == 5 && groupNo > 2) {
-        return 7;
+        return 6;
     }
     if (byLength.size() == 4 && groupNo > 1) {
-        return 7;
+        return 6;
     }
-    return 8;
+    return 7;
 }
 
 unsigned EncodingInfo::lastSuffixHashBits(unsigned numSym, unsigned groupNo) const {

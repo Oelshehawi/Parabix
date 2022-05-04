@@ -229,8 +229,10 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     Value * keyOffset = b->CreateSub(keyLength, lg.HALF_LENGTH);
     // Build up a single encoded value for table lookup from the hashcode sequence.
     Value * codewordVal = b->CreateAnd(hashValue, lg.LAST_SUFFIX_MASK);
-    // codewordVal = b->CreateShl(codewordVal, lg.LAST_SUFFIX_SHIFT_BITS); >>>>>>>>>>>>>>>>>>>>>>>>>> use this
     Value * hashcodePos = keyMarkPos;
+    codewordVal = b->CreateSelect(b->CreateICmpEQ(b->getSize(mNumSym), sz_ONE),
+                                  b->CreateOr(b->CreateAnd(codewordVal, sz_ONE), b->CreateShl(codewordVal, sz_ONE)),
+                                  codewordVal);
     for (unsigned j = 1; j < lg.groupInfo.encoding_bytes - 1; j++) {
         hashcodePos = b->CreateSub(hashcodePos, sz_ONE);
         Value * suffixByte = b->CreateZExt(b->CreateLoad(b->getRawInputPointer("hashValues", hashcodePos)), sizeTy);
@@ -243,9 +245,11 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     // shift by pfx len bits
     pfxByte = b->CreateTrunc(b->CreateAnd(pfxByte, lg.PREFIX_LENGTH_MASK), b->getInt8Ty());
     // codewordVal = b->CreateOr(codewordVal, b->CreateAnd(pfxByte, lg.SUFFIX_MASK));
-
+    // codewordVal = b->CreateOr(b->CreateAnd(codewordVal, lg.EXTRA_BITS_MASK), b->CreateShl(codewordVal, lg.EXTRA_BITS));
     Value * subTablePtr = b->CreateGEP(hashTableBasePtr, b->CreateMul(b->CreateSub(keyLength, lg.LO), lg.PHRASE_SUBTABLE_SIZE));
     Value * tableIdxHash = b->CreateAnd(codewordVal, lg.TABLE_MASK, "tableIdx");
+    Value * origTableIdx = tableIdxHash;
+    tableIdxHash = b->CreateSelect(b->CreateICmpUGT(tableIdxHash, sz_HALF_TBL_IDX), tableIdxHash, b->CreateAdd(tableIdxHash, sz_HALF_TBL_IDX));
     Value * keyIdxPtr = b->CreateGEP(subTablePtr, b->CreateMul(tableIdxHash, keyLength));
     Value * tblEntryPtr = b->CreateInBoundsGEP(keyIdxPtr, sz_ZERO);
     // b->CreateWriteCall(b->getInt32(STDERR_FILENO), symPtr1, keyLength);
@@ -355,10 +359,10 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     b->CreateBr(nextKey);
 
     b->SetInsertPoint(tryHandleCollision);
-    b->CreateCondBr(b->CreateICmpULT(tableIdxHash, sz_HALF_TBL_IDX), handleCollision, nextKey);
+    b->CreateCondBr(b->CreateICmpULT(origTableIdx, sz_HALF_TBL_IDX), handleCollision, nextKey);
 
     b->SetInsertPoint(handleCollision);
-    Value * tableIdxHashSH = b->CreateAdd(sz_HALF_TBL_IDX, tableIdxHash);
+    Value * tableIdxHashSH = origTableIdx;
     b->CreateCondBr(b->CreateICmpEQ(tableIdxHash, tableIdxHashSH), nextKey, resolveCollision);
 
     b->SetInsertPoint(resolveCollision);
@@ -481,7 +485,9 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     // Build up a single encoded value for table lookup from the hashcode sequence.
     Value * symCodewordVal = b->CreateAnd(symHashValue, lg.LAST_SUFFIX_MASK);
     Value * symHashcodePos = symMarkPos;
-    // symCodewordVal = b->CreateShl(symCodewordVal, lg.LAST_SUFFIX_SHIFT_BITS); >>>>>>>>>>>> use this
+    symCodewordVal = b->CreateSelect(b->CreateICmpEQ(b->getSize(mNumSym), sz_ONE),
+                                  b->CreateOr(b->CreateAnd(symCodewordVal, sz_ONE), b->CreateShl(symCodewordVal, sz_ONE)),
+                                  symCodewordVal);
     for (unsigned j = 1; j < lg.groupInfo.encoding_bytes - 1; j++) {
         symHashcodePos = b->CreateSub(symHashcodePos, sz_ONE);
         Value * symSuffixByte = b->CreateZExt(b->CreateLoad(b->getRawInputPointer("hashValues", symHashcodePos)), sizeTy);
@@ -491,15 +497,13 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     // add PREFIX_LENGTH_MASK bits for larger index space
     symHashcodePos = b->CreateSub(symHashcodePos, sz_ONE);
     Value * symPfxByte = b->CreateZExt(b->CreateLoad(b->getRawInputPointer("hashValues", symHashcodePos)), sizeTy);
-    // Value * writtenVal = symCodewordVal;
-    // symCodewordVal = b->CreateOr(symCodewordVal, b->CreateAnd(symPfxByte, lg.SUFFIX_MASK));
     symPfxByte = b->CreateTrunc(b->CreateAnd(symPfxByte, lg.PREFIX_LENGTH_MASK), b->getInt64Ty());
+    // symCodewordVal = b->CreateOr(b->CreateAnd(symCodewordVal, lg.EXTRA_BITS_MASK), b->CreateShl(symCodewordVal, lg.EXTRA_BITS));
 
     Value * symSubTablePtr = b->CreateGEP(globalHashTableBasePtr, b->CreateMul(b->CreateSub(symLength, lg.LO), lg.PHRASE_SUBTABLE_SIZE));
     Value * symTableIdxHash = b->CreateAnd(symCodewordVal, lg.TABLE_MASK, "tableIdx");
-    Value * symTableIdxHashSH = b->CreateAdd(sz_HALF_TBL_IDX, symTableIdxHash);
-    symTableIdxHashSH = b->CreateZExtOrTrunc(b->CreateSelect(b->CreateICmpULT(symTableIdxHash, sz_HALF_TBL_IDX), symTableIdxHashSH, symTableIdxHash), sizeTy);
-    // do not truncate or ZExt
+    Value * symTableIdxHashSH = symTableIdxHash;
+    symTableIdxHash = b->CreateSelect(b->CreateICmpUGT(symTableIdxHash, sz_HALF_TBL_IDX), symTableIdxHash, b->CreateAdd(symTableIdxHash, sz_HALF_TBL_IDX));
     Value * symIdxPtr = b->CreateGEP(symSubTablePtr, b->CreateMul(symTableIdxHash, symLength));
     Value * symTblEntryPtr = b->CreateInBoundsGEP(symIdxPtr, sz_ZERO);
     Value * symIdxPtrSH = b->CreateGEP(symSubTablePtr, b->CreateMul(symTableIdxHashSH, symLength));
@@ -540,8 +544,7 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     // b->CreateWriteCall(b->getInt32(STDERR_FILENO), symPtr11, symLength);
     // b->CreateBr(proceed);
     // b->SetInsertPoint(proceed);
-    // UNDO this: debugging for memory leak
-    b->CreateStore(b->CreateZExtOrTrunc(b->CreateAnd(symHashValue, b->getSize(0xFF7F)), b->getInt16Ty()), b->getRawOutputPointer("hashValuesUpdated", symMarkPos));
+    b->CreateStore(b->CreateZExtOrTrunc(b->CreateOr(symHashValue, b->getSize(0x80)), b->getInt16Ty()), b->getRawOutputPointer("hashValuesUpdated", symMarkPos));
     b->CreateBr(checkSymCompression);
 
     b->SetInsertPoint(checkHashValueUpdateSH);
@@ -560,8 +563,7 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     // b->CallPrintInt("b->CreateOr(symHashValue, b->getSize(0x80)", b->CreateOr(symHashValue, b->getSize(0x80)));
     b->CreateBr(proceed);
     b->SetInsertPoint(proceed);
-    // UNDO this: debugging for memory leak
-    b->CreateStore(b->CreateZExtOrTrunc(b->CreateOr(symHashValue, b->getSize(0x80)), b->getInt16Ty()), b->getRawOutputPointer("hashValuesUpdated", symMarkPos));
+    b->CreateStore(b->CreateZExtOrTrunc(b->CreateAnd(symHashValue, b->getSize(0xFF7F)), b->getInt16Ty()), b->getRawOutputPointer("hashValuesUpdated", symMarkPos));
     b->CreateBr(checkSymCompression);
     // b->CreateBr(nextSym);
 
@@ -889,7 +891,7 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
     Value * keyMarkPos = b->CreateAdd(keyWordPos, keyMarkPosInWord, "keyEndPos");
     /* Determine the key length. */
     Value * hashValue = b->CreateZExt(b->CreateLoad(b->getRawInputPointer("hashValues", keyMarkPos)), sizeTy);
-    Value * hashExtBit = b->CreateZExtOrTrunc(b->CreateAnd(hashValue, b->getSize(0x80)), sizeTy);
+    Value * hashExtBit = b->CreateAnd(hashValue, b->getSize(0x80));
     Value * keyLength = b->CreateAdd(b->CreateLShr(hashValue, lg.MAX_HASH_BITS), sz_PHRASE_LEN_OFFSET, "keyLength");
     Value * keyStartPos = b->CreateSub(keyMarkPos, b->CreateSub(keyLength, sz_ONE), "keyStartPos");
     // keyOffset for accessing the final half of an entry.
@@ -902,8 +904,10 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
     Hence HASH_MASK_NEW -> mask of FFFFFFFF, FFFFFFFFFFFF, FFFFFFFFFFFFFFFF for LG {0,1,2}, 3, 4 respectively.
     */
     // Build up a single encoded value for table lookup from the hashcode sequence.
-    // NEEDS FIX: LAST_SUFFIX_MASK does not allow all the bits to be used for 2-sym phrases
     Value * codewordVal = b->CreateAnd(hashValue, lg.LAST_SUFFIX_MASK);
+    codewordVal = b->CreateSelect(b->CreateICmpEQ(b->getSize(mNumSym), sz_ONE),
+                                  b->CreateOr(b->CreateAnd(codewordVal, sz_ONE), b->CreateShl(codewordVal, sz_ONE)),
+                                  codewordVal);
     Value * hashcodePos = keyMarkPos;
 #ifdef PRINT_DICT_ONLY
     Value * writtenVal = b->CreateAdd(lg.LAST_SUFFIX_BASE, b->CreateAnd(hashValue, lg.LAST_SUFFIX_MASK));;
@@ -923,7 +927,7 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
     Value * pfxByte = b->CreateZExt(b->CreateLoad(b->getRawInputPointer("hashValues", hashcodePos)), sizeTy);
 
     pfxByte = b->CreateTrunc(b->CreateAnd(pfxByte, lg.PREFIX_LENGTH_MASK), b->getInt64Ty());
-    Value * extBit = b->CreateZExtOrTrunc(b->CreateLShr(hashExtBit, b->getSize(7)), sizeTy);
+    Value * extBit = b->CreateLShr(hashExtBit, b->getSize(7));
 #ifdef PRINT_DICT_ONLY
     pfxByte = b->CreateSelect(b->CreateICmpEQ(b->CreateAnd(extBit, sz_ONE), sz_ONE),
                                   b->CreateOr(pfxByte, sz_ONE),
@@ -935,10 +939,12 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
     Value * ZTF_prefix1 = b->CreateAdd(pfxOffset1, multiplier1);
 #endif
     Value * subTablePtr = b->CreateGEP(hashTableBasePtr, b->CreateMul(b->CreateSub(keyLength, lg.LO), lg.PHRASE_SUBTABLE_SIZE));
+    // codewordVal = b->CreateOr(b->CreateAnd(codewordVal, lg.EXTRA_BITS_MASK), b->CreateShl(codewordVal, lg.EXTRA_BITS));
     /// TODO: experiment the number of bits in sz_TABLEMASK
     Value * tableIdxHash = b->CreateAnd(codewordVal, lg.TABLE_MASK, "tableIdx");
     Value * tableIdxHashOld = tableIdxHash;
-    tableIdxHash = b->CreateSelect(b->CreateICmpEQ(extBit, sz_ONE), b->CreateAdd(sz_HALF_TBL_IDX, tableIdxHash), tableIdxHash);
+    tableIdxHash = b->CreateSelect(b->CreateAnd(b->CreateICmpULT(tableIdxHash, sz_HALF_TBL_IDX), b->CreateICmpEQ(extBit, sz_ONE)),
+                                   b->CreateAdd(sz_HALF_TBL_IDX, tableIdxHash), tableIdxHash);
     // b->CallPrintInt("keyLength", keyLength);
     // b->CallPrintInt("hashValue", hashValue);
     Value * keyIdxPtr = b->CreateGEP(subTablePtr, b->CreateMul(tableIdxHash, keyLength));
@@ -1069,7 +1075,6 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
     Value * curPos = keyMarkPos;
     Value * curHash = hashValue;
     // Write the suffixes.
-    // NEEDS FIX: LAST_SUFFIX_MASK bits are used from hashvalue for 2-symbol phrases - to be considered while fixing prev NEEDS FIX
     Value * last_suffix = b->CreateTrunc(b->CreateAdd(lg.LAST_SUFFIX_BASE, b->CreateAnd(curHash, lg.LAST_SUFFIX_MASK, "ZTF_suffix_last")), b->getInt8Ty());
     b->CreateStore(last_suffix, b->getRawOutputPointer("encodedBytes", curPos));
     curPos = b->CreateSub(curPos, sz_ONE);
@@ -1109,7 +1114,7 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
     Value * old = pfxLgthMask;
     hashExtBit = b->CreateLShr(hashExtBit, b->getSize(7));
     pfxLgthMask = b->CreateTrunc(b->CreateAnd(pfxLgthMask, lg.PREFIX_LENGTH_MASK), b->getInt64Ty());
-    pfxLgthMask = b->CreateSelect(b->CreateICmpEQ(b->CreateAnd(hashExtBit, sz_ONE), sz_ONE),
+    pfxLgthMask = b->CreateSelect(b->CreateICmpEQ(b->CreateAnd(hashExtBit, sz_ONE), sz_ZERO),
                                   b->CreateOr(pfxLgthMask, sz_ONE),
                                   b->CreateAnd(pfxLgthMask, b->getSize(0x6)));
     pfxLgthMask = b->CreateTrunc(pfxLgthMask, b->getInt64Ty());
@@ -2037,7 +2042,9 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
     Value * codewordVal_debug = codewordVal;
 #endif
     codewordVal = b->CreateSelect(b->CreateICmpUGE(codewordVal, b->getSize(0x80)), b->CreateSub(codewordVal, b->getSize(0x80)), codewordVal);
-    // codewordVal = b->CreateShl(codewordVal, lg.LAST_SUFFIX_SHIFT_BITS);
+    codewordVal = b->CreateSelect(b->CreateICmpEQ(b->getSize(mNumSym), sz_ONE),
+                                  b->CreateOr(b->CreateAnd(codewordVal, sz_ONE), b->CreateShl(codewordVal, sz_ONE)),
+                                  codewordVal);
     for (unsigned j = 1; j < lg.groupInfo.encoding_bytes - 1; j++) {
         hashcodePos = b->CreateSub(hashcodePos, sz_ONE);
         Value * sfxByte = b->CreateZExt(b->CreateLoad(b->getRawInputPointer("byteData", hashcodePos)), sizeTy);
@@ -2068,9 +2075,10 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
 #endif
 
     Value * subTablePtr = b->CreateGEP(hashTableBasePtr, b->CreateMul(b->CreateSub(keyLength, lg.LO), lg.PHRASE_SUBTABLE_SIZE));
+    // codewordVal = b->CreateOr(b->CreateAnd(codewordVal, lg.EXTRA_BITS_MASK), b->CreateShl(codewordVal, lg.EXTRA_BITS));
     Value * tableIdxHash = b->CreateAnd(codewordVal, lg.TABLE_MASK, "tableIdx");
-    tableIdxHash = b->CreateSelect(b->CreateICmpEQ(b->CreateAnd(thePfxHashBits, sz_ONE), sz_ZERO),
-                                   tableIdxHash, b->CreateAdd(sz_HALF_TBL_IDX, tableIdxHash));
+    tableIdxHash = b->CreateSelect(b->CreateAnd(b->CreateICmpULT(tableIdxHash, sz_HALF_TBL_IDX), b->CreateICmpEQ(b->CreateAnd(thePfxHashBits, sz_ONE), sz_ONE)),
+                                   b->CreateAdd(sz_HALF_TBL_IDX, tableIdxHash), tableIdxHash);
     Value * keyIdxPtr = b->CreateGEP(subTablePtr, b->CreateMul(tableIdxHash, keyLength));
     Value * tblEntryPtr = b->CreateInBoundsGEP(keyIdxPtr, sz_ZERO);
     // Use two halfSymLen loads to get hash and symbol values.
@@ -2157,7 +2165,9 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
 #endif
     //b->CallPrintInt("lastSuffixByte", encodedVal);
     encodedVal = b->CreateSelect(b->CreateICmpUGE(encodedVal, b->getSize(0x80)), b->CreateSub(encodedVal, b->getSize(0x80)), encodedVal);
-    //encodedVal = b->CreateSub(encodedVal, lg.LAST_SUFFIX_BASE); //-> subtracting leads to incorrect tableIdx?
+    encodedVal = b->CreateSelect(b->CreateICmpEQ(b->getSize(mNumSym), sz_ONE),
+                                  b->CreateOr(b->CreateAnd(encodedVal, sz_ONE), b->CreateShl(encodedVal, sz_ONE)),
+                                  encodedVal);
     for (unsigned i = 1; i < lg.groupInfo.encoding_bytes-1; i++) {
         curPos = b->CreateSub(curPos, sz_ONE);
         Value * suffixByte = b->CreateZExt(b->CreateLoad(b->getRawInputPointer("byteData", curPos)), sizeTy);
@@ -2199,9 +2209,10 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
     Value * symOffset = b->CreateSub(symLength, lg.HALF_LENGTH);
 
     subTablePtr = b->CreateGEP(hashTableBasePtr, b->CreateMul(b->CreateSub(symLength, lg.LO), lg.PHRASE_SUBTABLE_SIZE));
+    // encodedVal = b->CreateOr(b->CreateAnd(encodedVal, lg.EXTRA_BITS_MASK), b->CreateShl(encodedVal, lg.EXTRA_BITS));
     tableIdxHash = b->CreateAnd(encodedVal, lg.TABLE_MASK);
-    tableIdxHash = b->CreateSelect(b->CreateICmpEQ(b->CreateAnd(pfxHashBits, sz_ONE), sz_ZERO),
-                                   tableIdxHash, b->CreateAdd(sz_HALF_TBL_IDX, tableIdxHash));
+    tableIdxHash = b->CreateSelect(b->CreateAnd(b->CreateICmpULT(tableIdxHash, sz_HALF_TBL_IDX), b->CreateICmpEQ(b->CreateAnd(pfxHashBits, sz_ONE), sz_ONE)),
+                    b->CreateAdd(sz_HALF_TBL_IDX, tableIdxHash), tableIdxHash);
     keyIdxPtr = b->CreateGEP(subTablePtr, b->CreateMul(tableIdxHash, symLength));
     tblEntryPtr = b->CreateInBoundsGEP(keyIdxPtr, sz_ZERO);
 
@@ -2351,7 +2362,9 @@ void FinalizeCandidateMatches::generateMultiBlockLogic(BuilderRef b, Value * con
 
     Value * hashcodePos = keyMarkPos;
     Value * codewordVal = b->CreateZExt(b->CreateLoad(b->getRawInputPointer("cmpData", hashcodePos)), sizeTy);
-    // codewordVal = b->CreateShl(codewordVal, lg.LAST_SUFFIX_SHIFT_BITS);
+    // codewordVal = b->CreateSelect(b->CreateICmpEQ(b->getSize(mNumSym), sz_ONE),
+    //                               b->CreateOr(b->CreateAnd(codewordVal, sz_ONE), b->CreateShl(codewordVal, sz_ONE)),
+    //                               codewordVal);
     for (unsigned j = 1; j < lg.groupInfo.encoding_bytes - 1; j++) {
         hashcodePos = b->CreateSub(hashcodePos, sz_ONE);
         Value * sfxByte = b->CreateZExt(b->CreateLoad(b->getRawInputPointer("cmpData", hashcodePos)), sizeTy);
@@ -2413,7 +2426,9 @@ void FinalizeCandidateMatches::generateMultiBlockLogic(BuilderRef b, Value * con
     Value * pfxGroupLen = b->CreateSub(hashPfx, lg.PREFIX_BASE);
     Value * curPos = hashMarkPos;
     Value * encodedVal = b->CreateZExt(b->CreateLoad(b->getRawInputPointer("cmpData", curPos)), sizeTy);
-    // encodedVal = b->CreateShl(encodedVal, lg.LAST_SUFFIX_SHIFT_BITS);
+    // encodedVal = b->CreateSelect(b->CreateICmpEQ(b->getSize(mNumSym), sz_ONE),
+    //                               b->CreateOr(b->CreateAnd(encodedVal, sz_ONE), b->CreateShl(encodedVal, sz_ONE)),
+    //                               encodedVal);
     for (unsigned i = 1; i < lg.groupInfo.encoding_bytes-1; i++) {
         curPos = b->CreateSub(curPos, sz_ONE);
         Value * suffixByte = b->CreateZExt(b->CreateLoad(b->getRawInputPointer("cmpData", curPos)), sizeTy);

@@ -76,7 +76,11 @@ LengthGroupParameters::LengthGroupParameters(BuilderRef b, EncodingInfo encoding
     LENGTH_MASK(b->getSize(2UL * groupHalfLength - 1UL)),
     EXTENSION_MASK(b->getSize((1UL << groupInfo.length_extension_bits) - 1UL)),
     TABLE_MASK(b->getSize((1U << encodingScheme.tableSizeBits(groupNo)) -1)),
+    EXTRA_BITS(b->getSize(encodingScheme.tableSizeBits(groupNo) % 7U)),
+    EXTRA_BITS_MASK(b->getSize((1UL << (encodingScheme.tableSizeBits(groupNo) % 7U)) - 1UL)),
     TABLE_IDX_MASK(b->getSize((1U << (8*groupInfo.encoding_bytes)) -1)) {
+        // llvm::errs() << groupNo << " ->EXTRA_BITS " << (encodingScheme.tableSizeBits(groupNo) % 7U) << "\n";
+        // llvm::errs() << groupNo << " ->EXTRA_BITS_MASK " << ((1UL << (encodingScheme.tableSizeBits(groupNo) % 7U)) - 1UL) << "\n";
         assert(groupInfo.hi <= (1UL << (boost::intrusive::detail::floor_log2(groupInfo.lo) + 1UL)));
     }
 

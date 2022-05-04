@@ -61,6 +61,8 @@ struct LengthGroupParameters {
     Constant * LENGTH_MASK;
     Constant * EXTENSION_MASK;
     Constant * TABLE_MASK;
+    Constant * EXTRA_BITS;
+    Constant * EXTRA_BITS_MASK;
     Constant * TABLE_IDX_MASK;
 
     LengthGroupParameters(BuilderRef b, EncodingInfo encodingScheme, unsigned groupNo, unsigned numSym = 0);
