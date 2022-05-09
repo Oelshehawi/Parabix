@@ -78,9 +78,8 @@ using namespace kernel;
 namespace grep {
 
 EncodingInfo encodingScheme1(8,
-                             {{3, 3, 2, 0xC0, 8, 0},
-                              {4, 4, 2, 0xC8, 8, 0},
-                              {5, 8, 2, 0xD0, 8, 0},
+                             {{4, 4, 2, 0xC0, 8, 0},
+                              {5, 8, 2, 0xC8, 8, 0},
                               {9, 16, 3, 0xE0, 8, 0},
                               {17, 32, 4, 0xF0, 8, 0},
                              });
@@ -357,8 +356,8 @@ Ref self: https://www.geeksforgeeks.org/perl-assertions-in-regex/
             // llvm::errs() << "mSubExpression contains word chars" << "\n";
             mSubExpression = makeWordOnlySubExpression(mSubExpression, UnicodeIndexing);
             setComponent(mExternalComponents, Component::WordOnlySubRE);
-            errs() << "mRE " << Printer_RE::PrintRE(mRE) << '\n';
-            errs() << "mSubExpression " << Printer_RE::PrintRE(mSubExpression) << '\n';
+            // errs() << "mRE " << Printer_RE::PrintRE(mRE) << '\n';
+            // errs() << "mSubExpression " << Printer_RE::PrintRE(mSubExpression) << '\n';
         }
     }
 
@@ -385,12 +384,10 @@ void GrepEngine::getFullyDecompressedBytes(const std::unique_ptr<ProgramBuilder>
     StreamSet * const ztfHashBasis = P->CreateStreamSet(8);
     P->CreateKernelCall<S2PKernel>(coded_bytes, ztfHashBasis);
     StreamSet * const ztfInsertionLengths = P->CreateStreamSet(5);
-    StreamSet * countStream = P->CreateStreamSet(1);
-    StreamSet * const ztfHash_Basis_updated = P->CreateStreamSet(8);
-    P->CreateKernelCall<ZTF_PhraseExpansionDecoder>(encodingScheme1, ztfHashBasis, ztfInsertionLengths, countStream, ztfHash_Basis_updated);
+    P->CreateKernelCall<ZTF_PhraseExpansionDecoder>(encodingScheme1, ztfHashBasis, ztfInsertionLengths);
     StreamSet * const ztfRunSpreadMask = InsertionSpreadMask(P, ztfInsertionLengths);
     StreamSet * const ztfHash_u8_Basis = P->CreateStreamSet(8);
-    SpreadByMask(P, ztfRunSpreadMask, /*ztfHash_Basis_updated*/ztfHashBasis, ztfHash_u8_Basis);
+    SpreadByMask(P, ztfRunSpreadMask, ztfHashBasis, ztfHash_u8_Basis);
 
     StreamSet * decodedMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size());
     StreamSet * hashtableMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size());
@@ -684,7 +681,7 @@ void GrepEngine::ZTFPreliminaryGrep(const std::unique_ptr<ProgramBuilder> & P, r
 }
 
 void GrepEngine::ZTFDecmpLogic(const std::unique_ptr<ProgramBuilder> & P, StreamSet * Source, StreamSet * const Results, StreamSet * const decompressed_basis, bool matchOnlyMode) {
-    mZTFHashtableMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size());
+    mZTFHashtableMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size()); ///TODO: reduce the number of streams to 4+3
     mZTFDecodedMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size());
     mFilterSpan = P->CreateStreamSet(1);
     StreamSet * SourceBits = Source;
@@ -699,7 +696,7 @@ void GrepEngine::ZTFDecmpLogic(const std::unique_ptr<ProgramBuilder> & P, Stream
     for(unsigned sym = 0; sym < 2/*SymCount*/; sym++) {
         unsigned startIdx = 0;
         if (sym > 0) {
-            startIdx = 3;
+            startIdx = 1;
         }
         for (unsigned i = startIdx; i < n; i++) {
             const unsigned idx = (sym * encodingScheme1.byLength.size()) + i;
@@ -718,7 +715,6 @@ void GrepEngine::ZTFDecmpLogic(const std::unique_ptr<ProgramBuilder> & P, Stream
     }
     StreamSet * const decoded = P->CreateStreamSet(8);
     P->CreateKernelCall<S2PKernel>(u8bytes, decoded);
-    /// CHECK: Removes only the dictionary segments from decompressed data (not compressed segments)
     FilterByMask(P, mFilterSpan, decoded, decompressed_basis);
     // StreamSet * const filtered_bytes = P->CreateStreamSet(1, 8);
     // P->CreateKernelCall<P2SKernel>(decompressed_basis, filtered_bytes);

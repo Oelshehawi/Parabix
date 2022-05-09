@@ -73,9 +73,9 @@ static cl::opt<unsigned> Grouping("g", cl::desc("Experimental symbol grouping te
 static cl::opt<unsigned> EncodingScheme("es", cl::desc("Select the encoding scheme to be used"), cl::init(1), cl::cat(ztfHashOptions));
 
 typedef void (*ztfHashFunctionType)(uint32_t fd, const char *, const char *);
-// typedef void (*ztfHashDecmpFunctionType)(uint32_t fd);
+typedef void (*ztfHashDecmpFunctionType)(uint32_t fd);
 // typedef uint32_t (*ztfHashFunctionType)(uint32_t fd, const char *, const char *);
-typedef uint32_t (*ztfHashDecmpFunctionType)(uint32_t fd);
+// typedef uint32_t (*ztfHashDecmpFunctionType)(uint32_t fd);
 #if 0
 EncodingInfo encodingScheme1(8,
                              {{3, 3, 2, 0xC0, 8, 0}, //minLen, maxLen, hashBytes, pfxBase, hashBits, length_extension_bits
@@ -285,8 +285,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
 ztfHashDecmpFunctionType ztfHash_decompression_gen (CPUDriver & driver) {
     auto & b = driver.getBuilder();
     Type * const int32Ty = b->getInt32Ty();
- // auto P = driver.makePipeline({Binding{int32Ty, "fd"}});
-    auto P = driver.makePipeline({Binding{int32Ty, "fd"}}, {Binding{b->getSizeTy(), "count2"}});
+    auto P = driver.makePipeline({Binding{int32Ty, "fd"}});
     Scalar * const fileDescriptor = P->getInputScalar("fd");
 
     // Source data
@@ -295,15 +294,9 @@ ztfHashDecmpFunctionType ztfHash_decompression_gen (CPUDriver & driver) {
     StreamSet * const ztfHashBasis = P->CreateStreamSet(8);
     P->CreateKernelCall<S2PKernel>(source, ztfHashBasis);
     StreamSet * const ztfInsertionLengths = P->CreateStreamSet(5);
-    StreamSet * const countStream = P->CreateStreamSet(1);
-    StreamSet * const ztfHash_Basis_updated = P->CreateStreamSet(8);
-    P->CreateKernelCall<ZTF_PhraseExpansionDecoder>(encodingScheme1, ztfHashBasis, ztfInsertionLengths, countStream, ztfHash_Basis_updated);
-    //P->CreateKernelCall<DebugDisplayKernel>("countStream", countStream);
-    //P->CreateKernelCall<codeword_index>(ztfHashBasis, countStream);
-    P->CreateKernelCall<PopcountKernel>(countStream, P->getOutputScalar("count2"));
+    P->CreateKernelCall<ZTF_PhraseExpansionDecoder>(encodingScheme1, ztfHashBasis, ztfInsertionLengths);
     StreamSet * const ztfRunSpreadMask = InsertionSpreadMask(P, ztfInsertionLengths);
     StreamSet * const ztfHash_u8_Basis = P->CreateStreamSet(8);
-    //P->CreateKernelCall<DebugDisplayKernel>("ztfRunSpreadMask", ztfRunSpreadMask);
     SpreadByMask(P, ztfRunSpreadMask, ztfHashBasis, ztfHash_u8_Basis);
 
     StreamSet * decodedMarks = P->CreateStreamSet(SymCount * encodingScheme1.byLength.size());
@@ -311,15 +304,11 @@ ztfHashDecmpFunctionType ztfHash_decompression_gen (CPUDriver & driver) {
     StreamSet * hashtableSpan = P->CreateStreamSet(1);
     P->CreateKernelCall<ZTF_PhraseDecodeLengths>(encodingScheme1, SymCount, ztfHash_u8_Basis, decodedMarks, hashtableMarks, hashtableSpan);
 
-    // P->CreateKernelCall<PopcountKernel>(hashtableSpan, P->getOutputScalar("count2"));
-    //P->CreateKernelCall<DebugDisplayKernel>("hashtableSpan", hashtableSpan);
-
     StreamSet * const ztfHash_u8bytes = P->CreateStreamSet(1, 8);
     P->CreateKernelCall<P2SKernel>(ztfHash_u8_Basis, ztfHash_u8bytes);
     //P->CreateKernelCall<StdOutKernel>(ztfHash_u8bytes);
 
     const auto n = encodingScheme1.byLength.size();
-
     StreamSet * u8bytes = ztfHash_u8bytes;
     for(unsigned sym = 0; sym < SymCount; sym++) {
         unsigned startIdx = 0;
@@ -333,11 +322,8 @@ ztfHashDecmpFunctionType ztfHash_decompression_gen (CPUDriver & driver) {
             const unsigned idx = (sym * encodingScheme1.byLength.size()) + i;
 
             P->CreateKernelCall<StreamSelect>(hashGroupMarks, Select(hashtableMarks, {idx}));
-            //P->CreateKernelCall<DebugDisplayKernel>("hashGroupMarks", hashGroupMarks);
             StreamSet * const groupDecoded = P->CreateStreamSet(1);
             P->CreateKernelCall<StreamSelect>(groupDecoded, Select(decodedMarks, {idx}));
-            //P->CreateKernelCall<DebugDisplayKernel>("groupDecoded", groupDecoded);
-
             StreamSet * const input_bytes = u8bytes;
             StreamSet * const output_bytes = P->CreateStreamSet(1, 8);
             // hashGroupMarks -> hashtable codeword group marks
@@ -368,9 +354,9 @@ int main(int argc, char *argv[]) {
     } else {
         if (Decompression) {
             auto ztfHashDecompressionFunction = ztfHash_decompression_gen(pxDriver);
-         // ztfHashDecompressionFunction(fd);
-            uint64_t count2 = ztfHashDecompressionFunction(fd);
-            errs() << count2 << " count2" << "\n";
+            ztfHashDecompressionFunction(fd);
+            // uint64_t count2 = ztfHashDecompressionFunction(fd);
+            // errs() << count2 << " count2" << "\n";
         } else {
             auto ztfHashCompressionFunction = ztfHash_compression_gen(pxDriver);
             ztfHashCompressionFunction(fd, dictFile.c_str(), outputFile.c_str());

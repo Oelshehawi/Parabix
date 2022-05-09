@@ -16,17 +16,16 @@ class FinalizeCandidateMatches final : public MultiBlockKernel {
 public:
     FinalizeCandidateMatches(BuilderRef b,
                            EncodingInfo encodingScheme,
-                           unsigned groupNo,
                            StreamSet * const byteData,
-                           StreamSet * codewordEndMarks,
-                           StreamSet * groupCodewordMarks,
-                           StreamSet * candidateMatchMarks,
+                           StreamSet * candidateMatchesInDict,
+                           StreamSet * nonCandidateMatchesInDict,
+                           StreamSet * codeWordInCipherText,
+                           StreamSet * allCandidateMatches,
                            unsigned strideBlocks = 8);
 private:
     void generateMultiBlockLogic(BuilderRef iBuilder, llvm::Value * const numOfStrides) override;
 
     const EncodingInfo mEncodingScheme;
-    const unsigned mGroupNo;
 };
 
 

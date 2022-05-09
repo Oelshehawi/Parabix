@@ -344,6 +344,59 @@ void initializeDecompressionMasks(BuilderRef b,
     b->CreateCondBr(b->CreateICmpNE(nextBlockNo, sz_BLOCKS_PER_STRIDE), maskInitialization, strideMasksReady);
 }
 
+void initializeCodeWordMasks(BuilderRef b,
+                             struct ScanWordParameters & sw,
+                             Constant * sz_BLOCKS_PER_STRIDE,
+                             unsigned maskCount,
+                             Value * strideBlockOffset,
+                             std::vector<Value *> & keyMasks0,
+                             std::vector<Value *> & keyMasks1,
+                             std::vector<Value *> & hashMasks,
+                             BasicBlock * strideMasksReady) {
+    Constant * sz_ZERO = b->getSize(0);
+    Constant * sz_ONE = b->getSize(1);
+    Type * sizeTy = b->getSizeTy();
+    BasicBlock * const entryBlock = b->GetInsertBlock();
+    BasicBlock * const maskInitialization = b->CreateBasicBlock("maskInitialization");
+    b->CreateBr(maskInitialization);
+    b->SetInsertPoint(maskInitialization);
+    std::vector<PHINode *> keyMask0Accum(maskCount);
+    std::vector<PHINode *> keyMask1Accum(maskCount);
+    std::vector<PHINode *> hashMaskAccum(maskCount);
+    for (unsigned i = 0; i < maskCount; i++) {
+        keyMask0Accum[i] = b->CreatePHI(sizeTy, 2);
+        keyMask1Accum[i] = b->CreatePHI(sizeTy, 2);
+        hashMaskAccum[i] = b->CreatePHI(sizeTy, 2);
+        keyMask0Accum[i]->addIncoming(sz_ZERO, entryBlock);
+        keyMask1Accum[i]->addIncoming(sz_ZERO, entryBlock);
+        hashMaskAccum[i]->addIncoming(sz_ZERO, entryBlock);
+    }
+    PHINode * const blockNo = b->CreatePHI(sizeTy, 2);
+    blockNo->addIncoming(sz_ZERO, entryBlock);
+    Value * strideBlockIndex = b->CreateAdd(strideBlockOffset, blockNo);
+    for (unsigned i = 0; i < maskCount; i++) {
+        Value * key0BitBlock = b->loadInputStreamBlock("keyMarks0" + std::to_string(i), sz_ZERO, strideBlockIndex);
+        Value * key1BitBlock = b->loadInputStreamBlock("keyMarks1" + std::to_string(i), sz_ZERO, strideBlockIndex);
+        Value * hashBitBlock = b->loadInputStreamBlock("hashMarks" + std::to_string(i), sz_ZERO, strideBlockIndex);
+        Value * const anyKey0 = b->simd_any(sw.width, key0BitBlock);
+        Value * const anyKey1 = b->simd_any(sw.width, key1BitBlock);
+        Value * const anyHash = b->simd_any(sw.width, hashBitBlock);
+        Value * key0WordMask = b->CreateZExtOrTrunc(b->hsimd_signmask(sw.width, anyKey0), sizeTy);
+        Value * key1WordMask = b->CreateZExtOrTrunc(b->hsimd_signmask(sw.width, anyKey1), sizeTy);
+        Value * hashWordMask = b->CreateZExtOrTrunc(b->hsimd_signmask(sw.width, anyHash), sizeTy);
+        keyMasks0[i] = b->CreateOr(keyMask0Accum[i], b->CreateShl(key0WordMask, b->CreateMul(blockNo, sw.WORDS_PER_BLOCK)));
+        keyMasks1[i] = b->CreateOr(keyMask1Accum[i], b->CreateShl(key1WordMask, b->CreateMul(blockNo, sw.WORDS_PER_BLOCK)));
+        hashMasks[i] = b->CreateOr(hashMaskAccum[i], b->CreateShl(hashWordMask, b->CreateMul(blockNo, sw.WORDS_PER_BLOCK)));
+        keyMask0Accum[i]->addIncoming(keyMasks0[i], maskInitialization);
+        keyMask1Accum[i]->addIncoming(keyMasks1[i], maskInitialization);
+        hashMaskAccum[i]->addIncoming(hashMasks[i], maskInitialization);
+    }
+    Value * const nextBlockNo = b->CreateAdd(blockNo, sz_ONE);
+    blockNo->addIncoming(nextBlockNo, maskInitialization);
+    // Default initial compression mask is all ones (no zeroes => no compression).
+    b->CreateCondBr(b->CreateICmpNE(nextBlockNo, sz_BLOCKS_PER_STRIDE), maskInitialization, strideMasksReady);
+}
+
 void initializeOutputMasks(BuilderRef b,
                            ScanWordParameters & sw,
                            Constant * sz_BLOCKS_PER_STRIDE,

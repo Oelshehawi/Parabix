@@ -128,10 +128,6 @@ public:
                          EncodingInfo & encodingScheme,
                          StreamSet * const basis,
                          StreamSet * insertBixNum,
-                         StreamSet * countStream,
-                         StreamSet * basisUpdated,
-                         StreamSet * matches = nullptr,
-                         StreamSet * segmentSpans = nullptr,
                          bool fullyDecompress = true);
 protected:
     void generatePabloMethod() override;
@@ -146,9 +142,10 @@ public:
                          StreamSet * const basis,
                          StreamSet * Results,
                          StreamSet * dictStart,
-                         StreamSet * candidateMatchesNonFinal,
                          StreamSet * candidateMatchesInDict,
-                         StreamSet * groupStreams,
+                         StreamSet * nonCandidateMatchesInDict,
+                         StreamSet * codeWordInCipherText,
+                         StreamSet * candidateMatchesInCipherText,
                          bool matchOnly = false);
 protected:
     void generatePabloMethod() override;
@@ -159,6 +156,13 @@ protected:
 class codeword_index : public pablo::PabloKernel {
 public:
     codeword_index(BuilderRef kb, StreamSet * Source, StreamSet * cwIndex);
+protected:
+    void generatePabloMethod() override;
+};
+
+class MatchedSegmentsKernel : public pablo::PabloKernel {
+public:
+    MatchedSegmentsKernel(BuilderRef builder, StreamSet * OriginalMatches, StreamSet * CodewordMatches, StreamSet * dictionaryBoundaryBreaks, StreamSet * Matches, StreamSet * segmentStarts);
 protected:
     void generatePabloMethod() override;
 };

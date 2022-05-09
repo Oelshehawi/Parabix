@@ -297,7 +297,7 @@ Suffix space: 00-7F
 
 ================================================================================================================================================================
 
-7. Collision handling and phrase-selection embedded in MarkRepeatedHashvalue kernel
+7. Collision handling and phrase-selection embedded in MarkRepeatedHashvalue kernel (commit SHA 89501d0a881fbc1d73882199e53249447738031a)
 
 |GroupNo |SUB_TABLE_IDX_MASK_BITS (avail) | SUB_TABLE_IDX_MASK_BITS (used) | SUB_TABLE_IDX_MASK_BITS (free) |
 |-------:|-------------------------------:|-------------------------------:|-------------------------------:|
