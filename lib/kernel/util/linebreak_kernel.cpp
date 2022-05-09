@@ -98,19 +98,6 @@ void UnixLinesKernelBuilder::generatePabloMethod() {
     pb.createAssign(pb.createExtract(getOutput(0), 0), LB);
 }
 
-/*  Helper class to provide a LF stream as input to UnicodeLines logic,
-    necessary so that LookAhead operations on the stream are available
-    for CRLF processing.  */
-
-class LineFeedKernelBuilder final : public pablo::PabloKernel {
-public:
-    LineFeedKernelBuilder(BuilderRef b, StreamSet * Basis, StreamSet * LineFeedStream);
-protected:
-    void generatePabloMethod() override;
-    const unsigned mNumOfStreams;
-    const unsigned mStreamFieldWidth;
-};
-
 LineFeedKernelBuilder::LineFeedKernelBuilder(BuilderRef b, StreamSet * Basis, StreamSet * LineFeedStream)
 : PabloKernel(b, "lf" + sourceShape(Basis),
               // input

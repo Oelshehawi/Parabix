@@ -53,6 +53,21 @@ protected:
     NullCharMode mNullMode;
 };
 
+/*  Helper class to provide a LF stream as input to UnicodeLines logic,
+    necessary so that LookAhead operations on the stream are available
+    for CRLF processing.  */
+
+class LineFeedKernelBuilder final : public pablo::PabloKernel {
+public:
+    LineFeedKernelBuilder(BuilderRef b,
+                          kernel::StreamSet * Basis,
+                          kernel::StreamSet * LineFeedStream);
+protected:
+    void generatePabloMethod() override;
+    const unsigned mNumOfStreams;
+    const unsigned mStreamFieldWidth;
+};
+
 void UnicodeLinesLogic(const std::unique_ptr<kernel::ProgramBuilder> & P,
                        kernel::StreamSet * Basis,
                        kernel::StreamSet * LineEnds,

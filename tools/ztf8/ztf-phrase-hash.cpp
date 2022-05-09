@@ -10,6 +10,7 @@
 #include <kernel/basis/s2p_kernel.h>                    // for S2PKernel
 #include <kernel/io/stdout_kernel.h>                 // for StdOutKernel_
 #include <kernel/streamutils/pdep_kernel.h>
+#include <kernel/util/linebreak_kernel.h>
 #include <llvm/IR/Function.h>                      // for Function, Function...
 #include <llvm/IR/Module.h>                        // for Module
 #include <llvm/Support/CommandLine.h>              // for ParseCommandLineOp...
@@ -269,7 +270,9 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
     StreamSet * const partialSum = P->CreateStreamSet(1, 64);
     StreamSet * const phraseEndMarks = P->CreateStreamSet(1);
     P->CreateKernelCall<InverseStream>(phraseRuns, phraseEndMarks);
-    P->CreateKernelCall<FilterCompressedData>(encodingScheme1, SymCount, u8bytes, combinedMask, phraseEndMarks, compressed_bytes, partialSum);
+    StreamSet * const LF = P->CreateStreamSet();
+    P->CreateKernelCall<LineFeedKernelBuilder>(u8basis, LF);
+    P->CreateKernelCall<FilterCompressedData>(encodingScheme1, SymCount, u8bytes, combinedMask, LF, compressed_bytes, partialSum);
     // P->CreateKernelCall<DebugDisplayKernel>("partialSum", partialSum);
     // P->CreateKernelCall<StdOutKernel>(compressed_bytes);
 
