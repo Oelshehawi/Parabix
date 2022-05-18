@@ -46,13 +46,13 @@
 #include <re/adt/re_utility.h>
 #include <re/adt/printer_re.h>
 #include <re/alphabet/alphabet.h>
+#include <re/analysis/re_analysis.h>
+#include <re/analysis/re_name_gather.h>
+#include <re/analysis/collect_ccs.h>
 #include <re/cc/cc_kernel.h>
 #include <re/cc/multiplex_CCs.h>
 #include <re/transforms/exclude_CC.h>
 #include <re/transforms/to_utf8.h>
-#include <re/analysis/re_analysis.h>
-#include <re/analysis/re_name_gather.h>
-#include <re/analysis/collect_ccs.h>
 #include <re/transforms/replaceCC.h>
 #include <re/transforms/re_multiplex.h>
 #include <re/transforms/name_intro.h>
@@ -426,13 +426,7 @@ void GrepEngine::getFullyDecompressedBytes(const std::unique_ptr<ProgramBuilder>
 StreamSet * GrepEngine::getBasis(const std::unique_ptr<ProgramBuilder> & P, StreamSet * ByteStream) {
     if (hasComponent(mExternalComponents, Component::S2P)) {
         StreamSet * BasisBits = P->CreateStreamSet(ENCODING_BITS, 1);
-        if (PabloTransposition) {
-            P->CreateKernelCall<S2P_PabloKernel>(ByteStream, BasisBits);
-        } else if (SplitTransposition) {
-            Staged_S2P(P, ByteStream, BasisBits);
-        } else {
-            P->CreateKernelCall<S2PKernel>(ByteStream, BasisBits);
-        }
+        Selected_S2P(P, ByteStream, BasisBits);
         return BasisBits;
     }
     else return ByteStream;
@@ -1045,7 +1039,7 @@ void EmitMatchesEngine::grepPipeline(const std::unique_ptr<ProgramBuilder> & E, 
         //E->CreateKernelCall<DebugDisplayKernel>("FilteredMatchSpans", FilteredMatchSpans);
 
         StreamSet * FilteredBasis = E->CreateStreamSet(8, 1);
-        if (SplitTransposition) {
+        if (codegen::SplitTransposition) {
             Staged_S2P(E, Filtered, FilteredBasis);
         } else {
             E->CreateKernelCall<S2PKernel>(Filtered, FilteredBasis);

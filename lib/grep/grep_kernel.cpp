@@ -490,6 +490,41 @@ PopcountKernel::PopcountKernel (BuilderRef iBuilder, StreamSet * const toCount, 
 
 }
 
+PabloAST * matchDistanceCheck(PabloBuilder & b, unsigned distance, std::vector<PabloAST *> basis) {
+    PabloAST * differ = b.createZeroes();
+    for (unsigned i = 0; i < basis.size(); i++) {
+        PabloAST * basis_bits_i = basis[i];
+        PabloAST * advanced = b.createAdvance(basis_bits_i, distance);
+        differ = b.createOr(differ, b.createXor(basis_bits_i, advanced));
+    }
+    return differ;
+}
+
+void FixedDistanceMatchesKernel::generatePabloMethod() {
+    PabloBuilder pb(getEntryScope());
+    auto Basis = getInputStreamSet("Basis");
+    Var * mismatch = pb.createVar("mismatch", pb.createZeroes());
+    if (mHasCheckStream) {
+        auto ToCheck = getInputStreamSet("ToCheck")[0];
+        auto it = pb.createScope();
+        pb.createIf(ToCheck, it);
+        PabloAST * differ = matchDistanceCheck(it, mMatchDistance, Basis);
+        it.createAssign(mismatch, it.createAnd(ToCheck, differ));
+    } else {
+        pb.createAssign(mismatch, matchDistanceCheck(pb, mMatchDistance, Basis));
+    }
+    Var * const MatchVar = getOutputStreamVar("Matches");
+    pb.createAssign(pb.createExtract(MatchVar, pb.getInteger(0)), pb.createNot(mismatch, "Matches"));
+}
+
+FixedDistanceMatchesKernel::FixedDistanceMatchesKernel (BuilderRef b, unsigned distance, StreamSet * Basis, StreamSet * Matches, StreamSet * ToCheck)
+: PabloKernel(b, "Distance_" + std::to_string(distance) + "_Matches_" + std::to_string(Basis->getNumElements()) + "x1" + (ToCheck == nullptr ? "" : "_withCheck"),
+// inputs
+{Binding{"Basis", Basis}, Binding{"ToCheck", ToCheck}},
+// output
+{Binding{"Matches", Matches}}), mMatchDistance(distance), mHasCheckStream(ToCheck != nullptr) {
+
+}
 
 void AbortOnNull::generateMultiBlockLogic(BuilderRef b, llvm::Value * const numOfStrides) {
     Module * const m = b->getModule();
