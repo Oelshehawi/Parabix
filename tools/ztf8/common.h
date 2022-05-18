@@ -88,7 +88,6 @@ std::vector<llvm::Value *> initializeCompressionMasks(Kernel::BuilderRef b,
                                                     llvm::Value * strideBlockOffset,
                                                     llvm::Value * compressMaskPtr,
                                                     llvm::Value * phraseMaskPtr,
-                                                    llvm::Value * dictBoundaryMaskPtr,
                                                     llvm::BasicBlock * strideMasksReady);
 std::vector<llvm::Value *> initializeCompressionMasks1(Kernel::BuilderRef b,
                                                     struct ScanWordParameters & sw,
@@ -120,12 +119,20 @@ void initializeCodeWordMasks(Kernel::BuilderRef b,
                                                     std::vector<Value *> & keyMasks1,
                                                     std::vector<Value *> & hashMasks,
                                                     llvm::BasicBlock * strideMasksReady);
-void initializeOutputMasks(BuilderRef b,
+void initializeOutputMasks(Kernel::BuilderRef b,
                            ScanWordParameters & sw,
-                           Constant * sz_BLOCKS_PER_STRIDE,
-                           Value * strideBlockOffset,
-                           Value * outputMaskPtr,
-                           BasicBlock * outputMasksReady);
+                           llvm::Constant * sz_BLOCKS_PER_STRIDE,
+                           llvm::Value * strideBlockOffset,
+                           llvm::Value * outputMaskPtr,
+                           llvm::BasicBlock * outputMasksReady);
+
+
+Value * getLastLineBreakPos(Kernel::BuilderRef b,
+                           ScanWordParameters & sw,
+                           llvm::Constant * sz_BLOCKWIDTH,
+                           llvm::Constant * sz_BLOCKS_PER_STRIDE,
+                           llvm::Value * strideBlockOffset,
+                           llvm::BasicBlock * outputMasksReady);
 bool LLVM_READONLY DeferredAttributeIsSet();
 bool LLVM_READONLY DelayedAttributeIsSet();
 bool LLVM_READONLY PrefixCheckIsSet();

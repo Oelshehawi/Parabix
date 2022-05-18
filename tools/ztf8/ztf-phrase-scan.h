@@ -67,7 +67,6 @@ public:
                            StreamSet * compressionMask,
                            StreamSet * encodedBytes,
                            StreamSet * codewordMask,
-                           StreamSet * dictBoundaryMask,
                            unsigned strideBlocks = 8);
 private:
     void generateMultiBlockLogic(BuilderRef iBuilder, llvm::Value * const numOfStrides) override;
@@ -124,6 +123,16 @@ public:
                            StreamSet * dictPartialSum,
                            StreamSet * compressedMask,
                            unsigned strideBlocks = 8);
+private:
+    void generateMultiBlockLogic(BuilderRef iBuilder, llvm::Value * const numOfStrides) override;
+};
+
+class LineBreakPosInit final : public MultiBlockKernel {
+public:
+    LineBreakPosInit(BuilderRef b,
+                     StreamSet * LF,
+                     StreamSet * LFpartialSum,
+                     unsigned strideBlocks = 8);
 private:
     void generateMultiBlockLogic(BuilderRef iBuilder, llvm::Value * const numOfStrides) override;
 };

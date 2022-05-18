@@ -90,7 +90,7 @@ EncodingInfo encodingScheme1(8,
                              {{4, 4, 2, 0xC0, 8, 0},
                               {5, 8, 2, 0xC8, 8, 0},
                               {9, 16, 3, 0xE0, 8, 0},
-                              {17, 32, 4, 0xF0, 8, 0},
+                              {17, 32, 4, 0xF0, 8, 0}, // change encoding bytes to 3?
                              });
 ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
     auto & b = driver.getBuilder();
@@ -177,6 +177,12 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
     std::vector<StreamSet *> combinedData = {bixHashes[0], phraseRunIndex};
     P->CreateKernelCall<P2S16Kernel>(combinedData, allLenHashValues);
 
+    StreamSet * const LF = P->CreateStreamSet();
+    P->CreateKernelCall<LineFeedKernelBuilder>(u8basis, LF);
+
+    StreamSet * const LFpartialSum = P->CreateStreamSet(1, 64);
+    P->CreateKernelCall<LineBreakPosInit>(LF, LFpartialSum);
+    // P->CreateKernelCall<DebugDisplayKernel>("LFpartialSum", LFpartialSum);
     // Mark all the repeated hashCodes
     std::vector<StreamSet *> allHashMarks;
     StreamSet * const inputBytes = codeUnitStream;
@@ -218,7 +224,6 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
     StreamSet * u8bytes = codeUnitStream;
     std::vector<StreamSet *> extractionMasks;
     std::vector<StreamSet *> phraseMasks;
-    std::vector<StreamSet *> dictBoundaryMasks;
     for (int sym = SymCount-1; sym >= 0; sym--) {
         unsigned startLgIdx = 0;
         unsigned endIdx = encodingScheme1.byLength.size();
@@ -234,13 +239,11 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
             StreamSet * const output_bytes = P->CreateStreamSet(1, 8);
             StreamSet * const groupMarks = P->CreateStreamSet(1);
             StreamSet * const codewordMask = P->CreateStreamSet(1);
-            StreamSet * const dictBoundaryMask = P->CreateStreamSet(1);  // unused
             P->CreateKernelCall<LengthGroupSelector>(encodingScheme1, i, allHashMarks[sym], phraseLenBixnum[sym], /*phraseLenOverflow[sym]*/ overflow, groupMarks, PhraseLenOffset);
             // mask of dictionary codeword positions
-            P->CreateKernelCall<SymbolGroupCompression>(PhraseLen, encodingScheme1, sym, i, PhraseLenOffset, groupMarks, allHashValues[sym], input_bytes, extractionMask, output_bytes, codewordMask, dictBoundaryMask);
+            P->CreateKernelCall<SymbolGroupCompression>(PhraseLen, encodingScheme1, sym, i, PhraseLenOffset, groupMarks, allHashValues[sym], input_bytes, extractionMask, output_bytes, codewordMask);
             extractionMasks.push_back(extractionMask);
             phraseMasks.push_back(codewordMask);
-            dictBoundaryMasks.push_back(dictBoundaryMask);
             u8bytes = output_bytes;
             //Update sym-1 hashMarks to avoid compressing sub-phrases of any of the already compressed phrases
             for (int j = 0; j < sym; j++) {
@@ -270,9 +273,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
     StreamSet * const partialSum = P->CreateStreamSet(1, 64);
     StreamSet * const phraseEndMarks = P->CreateStreamSet(1);
     P->CreateKernelCall<InverseStream>(phraseRuns, phraseEndMarks);
-    StreamSet * const LF = P->CreateStreamSet();
-    P->CreateKernelCall<LineFeedKernelBuilder>(u8basis, LF);
-    P->CreateKernelCall<FilterCompressedData>(encodingScheme1, SymCount, u8bytes, combinedMask, LF, compressed_bytes, partialSum);
+    P->CreateKernelCall<FilterCompressedData>(encodingScheme1, SymCount, u8bytes, combinedMask, phraseEndMarks, compressed_bytes, partialSum);
     // P->CreateKernelCall<DebugDisplayKernel>("partialSum", partialSum);
     // P->CreateKernelCall<StdOutKernel>(compressed_bytes);
 

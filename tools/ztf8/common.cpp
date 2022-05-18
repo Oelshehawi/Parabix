@@ -183,7 +183,6 @@ std::vector<Value *> initializeCompressionMasks(BuilderRef b,
                                                 Value * strideBlockOffset,
                                                 Value * compressMaskPtr,
                                                 Value * phraseMaskPtr,
-                                                Value * dictBoundaryMaskPtr,
                                                 BasicBlock * strideMasksReady) {
     Constant * sz_ZERO = b->getSize(0);
     Constant * sz_ONE = b->getSize(1);
@@ -217,7 +216,6 @@ std::vector<Value *> initializeCompressionMasks(BuilderRef b,
     // Default initial compression mask is all ones (no zeroes => no compression).
     b->CreateBlockAlignedStore(b->allOnes(), b->CreateGEP(compressMaskPtr, strideBlockIndex));
     b->CreateBlockAlignedStore(b->allZeroes(), b->CreateGEP(phraseMaskPtr, strideBlockIndex));
-    b->CreateBlockAlignedStore(b->allZeroes(), b->CreateGEP(dictBoundaryMaskPtr, strideBlockIndex));
 
     Value * const nextBlockNo = b->CreateAdd(blockNo, sz_ONE);
     blockNo->addIncoming(nextBlockNo, maskInitialization);
@@ -418,4 +416,40 @@ void initializeOutputMasks(BuilderRef b,
     Value * const nextBlockNo = b->CreateAdd(blockNo, sz_ONE);
     blockNo->addIncoming(nextBlockNo, maskInit);
     b->CreateCondBr(b->CreateICmpNE(nextBlockNo, sz_BLOCKS_PER_STRIDE), maskInit, outputMasksReady);
+}
+
+Value * getLastLineBreakPos(BuilderRef b,
+                           ScanWordParameters & sw,
+                           Constant * sz_BLOCKWIDTH,
+                           Constant * sz_BLOCKS_PER_STRIDE,
+                           Value * strideBlockOffset,
+                           BasicBlock * lbPosCalculated) {
+    Constant * sz_ZERO = b->getSize(0);
+    Constant * sz_ONE = b->getSize(1);
+    Type * sizeTy = b->getSizeTy();
+    BasicBlock * const entryBlock = b->GetInsertBlock();
+    BasicBlock * const maskInit = b->CreateBasicBlock("maskInit");
+    b->CreateBr(maskInit);
+
+    b->SetInsertPoint(maskInit);
+    PHINode * const blockNo = b->CreatePHI(sizeTy, 2);
+    PHINode * const lineBreakPos = b->CreatePHI(sizeTy, 2);
+    blockNo->addIncoming(sz_ZERO, entryBlock);
+    lineBreakPos->addIncoming(sz_ZERO, entryBlock);
+    Value * strideBlockIndex = b->CreateAdd(strideBlockOffset, blockNo);
+    Value * const nextBlockNo = b->CreateAdd(blockNo, sz_ONE);
+    Value * blockOffset = b->CreateMul(blockNo, sz_BLOCKWIDTH);
+    // cases:
+    // 1. there is/are linebreaks in the bitblock -> add to lbPos the position of the last line break ([blockNo * blockSize] + lastLineBreakPosInBitblock)
+    // 2. No linebreaks in the bitblock -> add blockSize to lbPos
+    Value * lineBitBlock = b->loadInputStreamBlock("lineBreaks", sz_ZERO, strideBlockIndex);
+    Value * const lastLB = b->simd_ctlz(b->getBitBlockWidth(), lineBitBlock);
+    Value * lbPos = b->CreateZExtOrTrunc(b->CreateExtractElement(b->fwCast(16, lastLB), b->getInt32(0)), sizeTy);
+    // b->CallPrintInt("lbPos", lbPos);
+    // update lineBreakPos only when a new linebreak is seen in the bitblock
+    Value * newLinebreakPos = b->CreateSelect(b->CreateICmpEQ(lbPos, sz_BLOCKWIDTH), lineBreakPos, b->CreateAdd(blockOffset, b->CreateSub(sz_BLOCKWIDTH, lbPos)));
+    lineBreakPos->addIncoming(newLinebreakPos, maskInit);
+    blockNo->addIncoming(nextBlockNo, maskInit);
+    b->CreateCondBr(b->CreateICmpNE(nextBlockNo, sz_BLOCKS_PER_STRIDE), maskInit, lbPosCalculated);
+    return newLinebreakPos;
 }

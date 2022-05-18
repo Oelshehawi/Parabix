@@ -72,13 +72,8 @@ MarkRepeatedHashvalue::MarkRepeatedHashvalue(BuilderRef b,
                     InternalScalar{ArrayType::get(ArrayType::get(ArrayType::get(b->getInt8Ty(), encodingScheme.byLength[groupNo].hi), phraseHashSubTableSize(encodingScheme, groupNo)), encodingScheme.byLength[groupNo].hi - encodingScheme.byLength[groupNo].lo + 1), "segmentHashTable"},
                     InternalScalar{ArrayType::get(b->getInt8Ty(), phraseHashSubTableSize(encodingScheme, groupNo) * (encodingScheme.byLength[groupNo].hi - encodingScheme.byLength[groupNo].lo + 1)), "segmentFreqTable"}}),
 mEncodingScheme(encodingScheme), mGroupNo(groupNo), mNumSym(numSyms), mSubStride(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS)), mOffset(offset) {
-    if (DelayedAttributeIsSet()) {
-        mOutputStreamSets.emplace_back("hashMarks", hashMarks, FixedRate(), Delayed(encodingScheme.maxSymbolLength()) );
-        mOutputStreamSets.emplace_back("hashValuesUpdated", hashValuesUpdated, FixedRate(), Delayed(encodingScheme.maxSymbolLength()) );
-    } else {
-        mOutputStreamSets.emplace_back("hashMarks", hashMarks, BoundedRate(0,1));
-        addInternalScalar(ArrayType::get(b->getInt8Ty(), encodingScheme.byLength[groupNo].hi), "pendingOutput");
-    }
+    mOutputStreamSets.emplace_back("hashMarks", hashMarks, FixedRate(), Delayed(encodingScheme.maxSymbolLength()) );
+    mOutputStreamSets.emplace_back("hashValuesUpdated", hashValuesUpdated, FixedRate(), Delayed(encodingScheme.maxSymbolLength()) );
     setStride(1048576);
 }
 
@@ -727,7 +722,6 @@ SymbolGroupCompression::SymbolGroupCompression(BuilderRef b,
                                                StreamSet * compressionMask,
                                                StreamSet * encodedBytes,
                                                StreamSet * codewordMask,
-                                               StreamSet * dictBoundaryMask,
                                                unsigned strideBlocks)
 : MultiBlockKernel(b, "SymbolGroupCompression" + std::to_string(numSyms) + std::to_string(groupNo) + lengthGroupSuffix(encodingScheme, groupNo) + std::to_string(plen),
                    {Binding{"symbolMarks", symbolMarks},
@@ -745,8 +739,6 @@ mEncodingScheme(encodingScheme), mGroupNo(groupNo), mNumSym(numSyms), mSubStride
         mOutputStreamSets.emplace_back("compressionMask", compressionMask, FixedRate(), Delayed(encodingScheme.maxSymbolLength()) );
         mOutputStreamSets.emplace_back("encodedBytes", encodedBytes, FixedRate(), Delayed(encodingScheme.maxSymbolLength()) );
         mOutputStreamSets.emplace_back("codewordMask", codewordMask, FixedRate(), Delayed(encodingScheme.maxSymbolLength()) );
-        mOutputStreamSets.emplace_back("dictBoundaryMask", dictBoundaryMask, FixedRate()/*, Delayed(encodingScheme.maxSymbolLength()) */);
-        addInternalScalar(b->getInt64Ty(), "segmentSize");
     } else {
         mOutputStreamSets.emplace_back("compressionMask", compressionMask, BoundedRate(0,1));
         mOutputStreamSets.emplace_back("encodedBytes", encodedBytes, BoundedRate(0,1));
@@ -826,7 +818,6 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
     Value * producedPtr = b->CreateBitCast(b->getRawOutputPointer("compressionMask", initialProduced), bitBlockPtrTy);
     b->CreateStore(pendingMask, producedPtr);
     Value * phraseMaskPtr = b->CreateBitCast(b->getRawOutputPointer("codewordMask", initialPos), bitBlockPtrTy);
-    Value * dictMaskPtr = b->CreateBitCast(b->getRawOutputPointer("dictBoundaryMask", initialPos), bitBlockPtrTy);
     Value * compressMaskPtr = b->CreateBitCast(b->getRawOutputPointer("compressionMask", initialPos), bitBlockPtrTy);
     Value * hashTableBasePtr = b->CreateBitCast(b->getScalarFieldPtr("hashTable"), b->getInt8PtrTy());
     if (!DelayedAttributeIsSet()) {
@@ -858,7 +849,7 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
                                              b->CreateMul(subStrideNo, sz_BLOCKS_PER_SUB_STRIDE));
 
     ///TODO: optimize if there are no hashmarks in the keyMasks stream
-    std::vector<Value *> keyMasks = initializeCompressionMasks(b, sw, sz_BLOCKS_PER_SUB_STRIDE, 1, subStrideBlockOffset, compressMaskPtr, phraseMaskPtr, dictMaskPtr, strideMasksReady);
+    std::vector<Value *> keyMasks = initializeCompressionMasks(b, sw, sz_BLOCKS_PER_SUB_STRIDE, 1, subStrideBlockOffset, compressMaskPtr, phraseMaskPtr, strideMasksReady);
     Value * keyMask = keyMasks[0];
 
     b->SetInsertPoint(strideMasksReady);
@@ -1155,7 +1146,6 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
     b->setProducedItemCount("encodedBytes", produced);
     b->setProducedItemCount("compressionMask", produced);
     b->setProducedItemCount("codewordMask", produced);
-    // b->setProducedItemCount("dictBoundaryMask", produced);
     // b->CallPrintInt("produced", produced);
     Value * processed = b->CreateSelect(b->isFinal(), avail, b->CreateSub(avail, lg.HI));
     b->setProcessedItemCount("byteData", processed);
@@ -1221,6 +1211,74 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
 }
 
 
+LineBreakPosInit::LineBreakPosInit(BuilderRef b,
+                                StreamSet * LF,
+                                StreamSet * LFpartialSum,
+                                unsigned strideBlocks)
+: MultiBlockKernel(b, "LineBreakPosInit" +  std::to_string(strideBlocks),
+                   {Binding{"lineBreaks", LF, BoundedRate(0, 1)}},
+                   {}, {}, {},{}) {
+    mOutputStreamSets.emplace_back("LFpartialSum", LFpartialSum, FixedRate(ProcessingRate::Rational{1, 1048576}), Delayed(1));
+    addInternalScalar(b->getSizeTy(), "index");
+    addInternalScalar(b->getSizeTy(), "processedSubBlockSize");
+    setStride(1048576);
+}
+void LineBreakPosInit::generateMultiBlockLogic(BuilderRef b, Value * const numOfStrides) {
+    ScanWordParameters sw(b, mStride);
+    Constant * sz_STRIDE = b->getSize(mStride);
+    Constant * sz_BLOCKWIDTH = b->getSize(b->getBitBlockWidth());
+    Constant * sz_BLOCKS_PER_STRIDE = b->getSize(mStride/b->getBitBlockWidth());
+    Constant * sz_ZERO = b->getSize(0);
+    Constant * sz_ONE = b->getSize(1);
+    Type * sizeTy = b->getSizeTy();
+
+    BasicBlock * const entryBlock = b->GetInsertBlock();
+    BasicBlock * const stridePrologue = b->CreateBasicBlock("stridePrologue");
+    BasicBlock * const stridesDone = b->CreateBasicBlock("stridesDone");
+    BasicBlock * const endPosReady = b->CreateBasicBlock("endPosReady");
+
+    Value * const initialProcessedLines = b->getProcessedItemCount("lineBreaks");
+    Value * const avail = b->getAvailableItemCount("lineBreaks");
+    Value * const processedBlocks = b->CreateUDiv(initialProcessedLines, sz_BLOCKWIDTH);
+    Value * const subBlockBytes = b->getScalarField("processedSubBlockSize");
+    b->CreateBr(stridePrologue);
+
+    b->SetInsertPoint(stridePrologue);
+    PHINode * const strideNo = b->CreatePHI(sizeTy, 2);
+    strideNo->addIncoming(sz_ZERO, entryBlock);
+    PHINode * const processedPhi = b->CreatePHI(sizeTy, 2);
+    processedPhi->addIncoming(initialProcessedLines, entryBlock);
+    PHINode * const partialProcessedPhi = b->CreatePHI(sizeTy, 2);
+    partialProcessedPhi->addIncoming(subBlockBytes, entryBlock);
+    Value * nextStrideNo = b->CreateAdd(strideNo, sz_ONE);
+
+    Value * strideBlockOffset = b->CreateSub(b->CreateUDiv(processedPhi, sz_BLOCKWIDTH), processedBlocks);
+    Value * lastLbPosInStride = getLastLineBreakPos(b, sw, sz_BLOCKWIDTH, sz_BLOCKS_PER_STRIDE, strideBlockOffset, endPosReady);
+
+    b->SetInsertPoint(endPosReady);
+    lastLbPosInStride = b->CreateSelect(b->CreateICmpEQ(lastLbPosInStride, sz_ZERO), lastLbPosInStride, b->CreateSub(lastLbPosInStride, sz_ONE));
+    Value * partialProcessedBlock = b->CreateURem(lastLbPosInStride, sz_BLOCKWIDTH);
+    Value * const nextByteDataProcessed = b->CreateAdd(processedPhi, b->CreateSub(lastLbPosInStride, partialProcessedPhi));
+    // b->CallPrintInt("strideNo", strideNo);
+    // b->CallPrintInt("index", b->getScalarField("index"));
+    // b->CallPrintInt("processedPhi", processedPhi);
+    // b->CallPrintInt("strideBlockOffset", strideBlockOffset);
+    // b->CallPrintInt("lastLbPosInStride", lastLbPosInStride);
+    // b->CallPrintInt("partialProcessedPhi", partialProcessedPhi);
+    // b->CallPrintInt("nextByteDataProcessed", nextByteDataProcessed);
+    b->CreateStore(b->CreateTrunc(nextByteDataProcessed, b->getInt64Ty()), b->getRawOutputPointer("LFpartialSum", b->getScalarField("index")));
+    b->setScalarField("index", b->CreateAdd(sz_ONE, b->getScalarField("index")));
+    strideNo->addIncoming(nextStrideNo, endPosReady);
+    processedPhi->addIncoming(nextByteDataProcessed, endPosReady);
+    partialProcessedPhi->addIncoming(partialProcessedBlock, endPosReady);
+    b->CreateCondBr(b->CreateICmpNE(nextStrideNo, numOfStrides), stridePrologue, stridesDone);
+
+    b->SetInsertPoint(stridesDone);
+    b->setScalarField("processedSubBlockSize", partialProcessedBlock);
+    // b->CallPrintInt("lineBreaks-processed", nextByteDataProcessed);
+    b->setProcessedItemCount("lineBreaks", b->CreateSelect(b->isFinal(), avail, nextByteDataProcessed));
+}
+
 FilterCompressedData::FilterCompressedData(BuilderRef b,
                                 EncodingInfo encodingScheme,
                                 unsigned numSyms,
@@ -1236,13 +1294,8 @@ FilterCompressedData::FilterCompressedData(BuilderRef b,
                     Binding{"byteData", byteData, FixedRate(), LookBehind(33)}},
                    {}, {}, {},{}),
 mSubStride(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS)) {
-    if (DelayedAttributeIsSet()) {
-        mOutputStreamSets.emplace_back("cmpBytes", cmpBytes, BoundedRate(0, 1)/*PopcountOf("phraseMask")*/);
-        mOutputStreamSets.emplace_back("partialSum", partialSum, FixedRate(ProcessingRate::Rational{1, 1048576}), Delayed(1));
-    } else {
-        mOutputStreamSets.emplace_back("cmpBytes", cmpBytes, PopcountOf("phraseMask"));
-        addInternalScalar(ArrayType::get(b->getInt8Ty(), encodingScheme.maxSymbolLength()), "pendingOutput");
-    }
+    mOutputStreamSets.emplace_back("cmpBytes", cmpBytes, BoundedRate(0, 1)/*PopcountOf("phraseMask")*/);
+    mOutputStreamSets.emplace_back("partialSum", partialSum, FixedRate(ProcessingRate::Rational{1, 1048576}), Delayed(1));
     setStride(1048576);
 }
 // use symbolEndMarks and check if accessible byte_pos > last accessible symbol_end markPos to ensure complete phrase is written 
