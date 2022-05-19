@@ -203,7 +203,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
             P->CreateKernelCall<LengthGroupSelector>(encodingScheme1, i, phraseRuns, phraseLenBixnum[sym], phraseLenOverflow[sym]/*overflow*/, groupMarks, PhraseLenOffset);
             StreamSet * const hashMarks = P->CreateStreamSet(1);
             StreamSet * const hashValuesUpdated = P->CreateStreamSet(1, 16);
-            P->CreateKernelCall<MarkRepeatedHashvalue>(encodingScheme1, sym, i, PhraseLenOffset, groupMarks, cmpMarksSoFar, hashValues, inputBytes, hashMarks, hashValuesUpdated);
+            P->CreateKernelCall<MarkRepeatedHashvalue>(encodingScheme1, sym, i, PhraseLenOffset, LFpartialSum, groupMarks, cmpMarksSoFar, hashValues, inputBytes, hashMarks, hashValuesUpdated);
             symHashMarks.push_back(hashMarks);
             if (sym > 0) {
                 StreamSet * const combinedSymHashMarks = P->CreateStreamSet(1);

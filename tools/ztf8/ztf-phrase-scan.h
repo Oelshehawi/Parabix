@@ -36,6 +36,7 @@ public:
                            unsigned groupNo,
                            unsigned numSyms,
                            unsigned offset,
+                           StreamSet * lfData,
                            StreamSet * symEndMarks,
                            StreamSet * cmpMarksSoFar,
                            StreamSet * const hashValues,
@@ -47,6 +48,7 @@ private:
     void generateMultiBlockLogic(BuilderRef iBuilder, llvm::Value * const numOfStrides) override;
 
     const EncodingInfo mEncodingScheme;
+    const unsigned mStrideSize;
     const unsigned mGroupNo;
     const unsigned mNumSym;
     const unsigned mSubStride;

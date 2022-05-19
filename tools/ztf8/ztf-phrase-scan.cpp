@@ -51,6 +51,7 @@ MarkRepeatedHashvalue::MarkRepeatedHashvalue(BuilderRef b,
                                                unsigned numSyms,
                                                unsigned groupNo,
                                                unsigned offset,
+                                               StreamSet * lfData,
                                                StreamSet * symEndMarks,
                                                StreamSet * cmpMarksSoFar,
                                                StreamSet * const hashValues,
@@ -59,21 +60,24 @@ MarkRepeatedHashvalue::MarkRepeatedHashvalue(BuilderRef b,
                                                StreamSet * hashValuesUpdated,
                                                unsigned strideBlocks)
 : MultiBlockKernel(b, "MarkRepeatedHashvalue" + std::to_string(numSyms) + std::to_string(groupNo) + lengthGroupSuffix(encodingScheme, groupNo),
-                   {Binding{"symEndMarks", symEndMarks},
+                   {Binding{"lfPos", lfData, FixedRate(ProcessingRate::Rational{1, 1048576}), Delayed(1)},
+                    Binding{"symEndMarks", symEndMarks},
                     Binding{"cmpMarksSoFar", cmpMarksSoFar},
                     Binding{"hashValues", hashValues},
-                    Binding{"byteData", byteData, FixedRate(), Deferred() }}, //, BoundedRate(0,1)}},//FixedRate(), LookBehind(encodingScheme.byLength[groupNo].hi+1)}},
+                    Binding{"byteData", byteData, FixedRate(), Deferred()}},
                    {}, {}, {},
                    {InternalScalar{b->getBitBlockType(), "pendingMaskInverted"},
                     InternalScalar{b->getBitBlockType(), "pendingPhraseMask"},
                     InternalScalar{b->getBitBlockType(), "pendingDictPhraseMask"},
+                    InternalScalar{b->getSizeTy(), "segIndex"},
+                    InternalScalar{b->getSizeTy(), "processedSubBlockSize"},
                     InternalScalar{ArrayType::get(ArrayType::get(ArrayType::get(b->getInt8Ty(), encodingScheme.byLength[groupNo].hi), phraseHashSubTableSize(encodingScheme, groupNo)), encodingScheme.byLength[groupNo].hi - encodingScheme.byLength[groupNo].lo + 1), "hashTable"},
                     InternalScalar{ArrayType::get(b->getInt8Ty(), phraseHashSubTableSize(encodingScheme, groupNo) * (encodingScheme.byLength[groupNo].hi - encodingScheme.byLength[groupNo].lo + 1)), "freqTable"},
                     InternalScalar{ArrayType::get(ArrayType::get(ArrayType::get(b->getInt8Ty(), encodingScheme.byLength[groupNo].hi), phraseHashSubTableSize(encodingScheme, groupNo)), encodingScheme.byLength[groupNo].hi - encodingScheme.byLength[groupNo].lo + 1), "segmentHashTable"},
                     InternalScalar{ArrayType::get(b->getInt8Ty(), phraseHashSubTableSize(encodingScheme, groupNo) * (encodingScheme.byLength[groupNo].hi - encodingScheme.byLength[groupNo].lo + 1)), "segmentFreqTable"}}),
-mEncodingScheme(encodingScheme), mGroupNo(groupNo), mNumSym(numSyms), mSubStride(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS)), mOffset(offset) {
-    mOutputStreamSets.emplace_back("hashMarks", hashMarks, FixedRate(), Delayed(encodingScheme.maxSymbolLength()) );
-    mOutputStreamSets.emplace_back("hashValuesUpdated", hashValuesUpdated, FixedRate(), Delayed(encodingScheme.maxSymbolLength()) );
+mEncodingScheme(encodingScheme), mStrideSize(1048576), mGroupNo(groupNo), mNumSym(numSyms), mSubStride(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS)), mOffset(offset) {
+    mOutputStreamSets.emplace_back("hashMarks", hashMarks, FixedRate(), Delayed(encodingScheme.maxSymbolLength())); //BoundedRate(0, 1048576));
+    mOutputStreamSets.emplace_back("hashValuesUpdated", hashValuesUpdated, FixedRate(), Delayed(encodingScheme.maxSymbolLength())); //BoundedRate(0, 1048576));
     setStride(1048576);
 }
 
@@ -113,6 +117,7 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     BasicBlock * const subStrideMaskPrep = b->CreateBasicBlock("subStrideMaskPrep");
     BasicBlock * const strideMasksReady = b->CreateBasicBlock("strideMasksReady");
     BasicBlock * const keyProcessingLoop = b->CreateBasicBlock("keyProcessingLoop");
+    BasicBlock * const processKey = b->CreateBasicBlock("processKey");
     BasicBlock * const tryStore = b->CreateBasicBlock("tryStore");
     BasicBlock * const storeKey = b->CreateBasicBlock("storeKey");
     BasicBlock * const nextKey = b->CreateBasicBlock("nextKey");
@@ -120,6 +125,7 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     BasicBlock * const updatePending = b->CreateBasicBlock("updatePending");
     BasicBlock * const hashMarksDone = b->CreateBasicBlock("hashMarksDone");
     BasicBlock * const symProcessingLoop = b->CreateBasicBlock("symProcessingLoop");
+    BasicBlock * const processSym = b->CreateBasicBlock("processSym");
     BasicBlock * const checkSymCompression = b->CreateBasicBlock("checkSymCompression");
     BasicBlock * const markSymCompression = b->CreateBasicBlock("markSymCompression");
     BasicBlock * const nextSym = b->CreateBasicBlock("nextSym");
@@ -167,6 +173,8 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     Value * const initialPos = b->getProcessedItemCount("symEndMarks");
     Value * const avail = b->getAvailableItemCount("symEndMarks");
     Value * const initialProduced = b->getProducedItemCount("hashMarks");
+    Value * const bytesAccessible = b->getAccessibleItemCount("byteData");
+    Value * const partialProcessedBlock = b->getScalarField("processedSubBlockSize");
     Value * hashTableBasePtr = b->CreateBitCast(b->getScalarFieldPtr("segmentHashTable"), b->getInt8PtrTy());
     Value * freqTableBasePtr = b->CreateBitCast(b->getScalarFieldPtr("segmentFreqTable"), b->getInt8PtrTy());
     Value * globalHashTableBasePtr = b->CreateBitCast(b->getScalarFieldPtr("hashTable"), b->getInt8PtrTy());
@@ -179,7 +187,6 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     Value * hashMarksPtr = b->CreateBitCast(b->getRawOutputPointer("hashMarks", initialPos), bitBlockPtrTy);
     Value * toCopy = b->CreateMul(b->CreateMul(numOfStrides, sz_STRIDE), sz_TWO);
     b->CreateMemCpy(b->getRawOutputPointer("hashValuesUpdated", initialPos), b->getRawInputPointer("hashValues", initialPos), toCopy, 1);
-
     b->CreateBr(stridePrologue);
 
     b->SetInsertPoint(stridePrologue);
@@ -187,8 +194,30 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     PHINode * const strideNo = b->CreatePHI(sizeTy, 2);
     strideNo->addIncoming(sz_ZERO, entryBlock);
     Value * nextStrideNo = b->CreateAdd(strideNo, sz_ONE);
+    Value * lfPosPtr = b->CreateBitCast(b->getRawInputPointer("lfPos", b->getScalarField("segIndex")), b->getSizeTy()->getPointerTo());
+    Value * lfPos = b->CreateAlignedLoad(lfPosPtr, 1);
+
+    // unused start
+    // take the difference between LF positions of 2 consecutive segments to get the partially processed block-size
+    Value * const curIdx = b->getScalarField("segIndex");
+    Value * prevIdx = b->CreateSelect(b->CreateICmpEQ(curIdx, sz_ZERO), curIdx, b->CreateSub(curIdx, sz_ONE));
+    Value * lfPosPrevPtr = b->CreateBitCast(b->getRawInputPointer("lfPos", prevIdx), b->getSizeTy()->getPointerTo());
+    Value * prevLfPos = b->CreateLoad(lfPosPrevPtr, 1);
+    Value * const lfDiff = b->CreateSelect(b->CreateICmpEQ(lfPos, prevLfPos), lfPos, b->CreateSub(prevLfPos, lfPos));
+    Value * partialProcessedBlockUpdate = b->CreateURem(lfDiff, sz_BLOCKWIDTH);
+    // to get correct blockOffset
+    prevLfPos = b->CreateSelect(b->CreateICmpEQ(lfPos, prevLfPos), sz_ZERO, prevLfPos);
+
+    // Value * stridePos = prevLfPos; // overall processed byte position
+    // Value * strideBlockOffset = b->CreateUDiv(b->CreateSub(prevLfPos, initialPos), sz_BLOCKWIDTH);
+    // unused end
     Value * stridePos = b->CreateAdd(initialPos, b->CreateMul(strideNo, sz_STRIDE));
     Value * strideBlockOffset = b->CreateMul(strideNo, sz_BLOCKS_PER_STRIDE);
+
+    Value * processBeforeThisPos = lfPos; //b->CreateAdd(stridePos, partialProcessedBlock);
+    // Not done:
+    // overlapping partial blocks are processed twice within the same segment -> ok.
+    // When the segment changes, do not process the partial block's already processed symbols.
     b->CreateBr(subStrideMaskPrep);
 
     b->SetInsertPoint(subStrideMaskPrep);
@@ -216,6 +245,9 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     Value * keyWordPos = b->CreateAdd(subStridePos, b->CreateMul(keyWordIdx, sw.WIDTH));
     Value * keyMarkPosInWord = b->CreateCountForwardZeroes(theKeyWord);
     Value * keyMarkPos = b->CreateAdd(keyWordPos, keyMarkPosInWord, "keyEndPos");
+    b->CreateCondBr(b->CreateICmpULE(keyMarkPos, processBeforeThisPos), processKey, nextKey);
+
+    b->SetInsertPoint(processKey);
     /* Determine the key length. */
     Value * hashValue = b->CreateZExt(b->CreateLoad(b->getRawInputPointer("hashValues", keyMarkPos)), sizeTy);
     Value * keyLength = b->CreateAdd(b->CreateLShr(hashValue, lg.MAX_HASH_BITS), sz_PHRASE_LEN_OFFSET, "keyLength");
@@ -470,6 +502,9 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     Value * symWordPos = b->CreateAdd(step2subStridePos, b->CreateMul(symWordIdx, sw.WIDTH));
     Value * symMarkPosInWord = b->CreateCountForwardZeroes(theSymWord);
     Value * symMarkPos = b->CreateAdd(symWordPos, symMarkPosInWord, "symEndPos");
+    b->CreateCondBr(b->CreateICmpULE(symMarkPos, processBeforeThisPos), processSym, nextSym);
+
+    b->SetInsertPoint(processSym);
     /* Determine the sym length. */
     Value * symHashValue = b->CreateZExt(b->CreateLoad(b->getRawInputPointer("hashValues", symMarkPos)), sizeTy);
     Value * symLength = b->CreateAdd(b->CreateLShr(symHashValue, lg.MAX_HASH_BITS), sz_PHRASE_LEN_OFFSET, "symLength");
@@ -628,6 +663,7 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     b->CreateCondBr(b->CreateICmpNE(step2nextSubStrideNo, totalSubStrides), symProcessingPrep, symsDone);
 
     b->SetInsertPoint(symsDone);
+    b->setScalarField("segIndex", b->CreateAdd(sz_ONE, b->getScalarField("segIndex")));
     strideNo->addIncoming(nextStrideNo, symsDone);
     Value * hashTableSz = b->getSize((mEncodingScheme.byLength[mGroupNo].hi * phraseHashSubTableSize(mEncodingScheme, mGroupNo)) * (mEncodingScheme.byLength[mGroupNo].hi - mEncodingScheme.byLength[mGroupNo].lo + 1));
     Value * freqTableSz = b->getSize(phraseHashSubTableSize(mEncodingScheme, mGroupNo) * (mEncodingScheme.byLength[mGroupNo].hi - mEncodingScheme.byLength[mGroupNo].lo + 1));
@@ -635,22 +671,20 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     b->CreateMemZero(freqTableBasePtr, freqTableSz);
     b->CreateCondBr(b->CreateICmpNE(nextStrideNo, numOfStrides), stridePrologue, stridesDone);
     b->SetInsertPoint(stridesDone);
-    // In the next segment, we may need to access byte data in the last
-    // 32 bytes of this segment.
-    if (DeferredAttributeIsSet()) {
-        Value * processed = b->CreateSub(avail, lg.HI);
-        b->setProcessedItemCount("byteData", processed);
-    }
+    // b->setScalarField("processedSubBlockSize", partialProcessedBlockUpdate);
+
 
     // Although we have written the last block mask, we do not include it as
     // produced, because we may need to update it in the event that there is
     // a compressible symbol starting in this segment and finishing in the next.
-    Value * produced = b->CreateSelect(b->isFinal(), avail, b->CreateSub(avail, sz_BLOCKWIDTH));
+    Value * produced = b->CreateSelect(b->isFinal(), avail, b->CreateSub(avail, sz_BLOCKWIDTH)); //lfPos);
     b->setProducedItemCount("hashMarks", produced);
     b->setProducedItemCount("hashValuesUpdated", produced);
-    Value * processed = b->CreateSelect(b->isFinal(), avail, b->CreateSub(avail, lg.HI));
-    b->setProcessedItemCount("byteData", processed);
+    Value * processed = b->CreateSelect(b->isFinal(), avail, b->CreateSub(avail, lg.HI)); //lfPos);
+    // b->setProcessedItemCount("symEndMarks", processed);
+    // b->setProcessedItemCount("cmpMarksSoFar", processed);
     // b->setProcessedItemCount("hashValues", processed);
+    b->setProcessedItemCount("byteData", processed);
 #ifdef PRINT_HT_STATS_MARK_REPEATED_HASHVAL
     Value * const numSubTables = b->CreateMul(lg.PHRASE_SUBTABLE_SIZE,
                                               b->CreateAdd(b->CreateSub(lg.HI, lg.LO), sz_ONE));
@@ -1216,7 +1250,7 @@ LineBreakPosInit::LineBreakPosInit(BuilderRef b,
                                 StreamSet * LFpartialSum,
                                 unsigned strideBlocks)
 : MultiBlockKernel(b, "LineBreakPosInit" +  std::to_string(strideBlocks),
-                   {Binding{"lineBreaks", LF, BoundedRate(0, 1)}},
+                   {Binding{"lineBreaks", LF, /*BoundedRate(0, 1)*/}},
                    {}, {}, {},{}) {
     mOutputStreamSets.emplace_back("LFpartialSum", LFpartialSum, FixedRate(ProcessingRate::Rational{1, 1048576}), Delayed(1));
     addInternalScalar(b->getSizeTy(), "index");
@@ -1240,25 +1274,26 @@ void LineBreakPosInit::generateMultiBlockLogic(BuilderRef b, Value * const numOf
     Value * const initialProcessedLines = b->getProcessedItemCount("lineBreaks");
     Value * const avail = b->getAvailableItemCount("lineBreaks");
     Value * const processedBlocks = b->CreateUDiv(initialProcessedLines, sz_BLOCKWIDTH);
-    Value * const subBlockBytes = b->getScalarField("processedSubBlockSize");
+    // Value * const subBlockBytes = b->getScalarField("processedSubBlockSize");
+    // b->CallPrintInt("initialProcessedLines", initialProcessedLines);
     b->CreateBr(stridePrologue);
 
     b->SetInsertPoint(stridePrologue);
     PHINode * const strideNo = b->CreatePHI(sizeTy, 2);
     strideNo->addIncoming(sz_ZERO, entryBlock);
-    PHINode * const processedPhi = b->CreatePHI(sizeTy, 2);
-    processedPhi->addIncoming(initialProcessedLines, entryBlock);
-    PHINode * const partialProcessedPhi = b->CreatePHI(sizeTy, 2);
-    partialProcessedPhi->addIncoming(subBlockBytes, entryBlock);
+    // PHINode * const processedPhi = b->CreatePHI(sizeTy, 2);
+    // processedPhi->addIncoming(initialProcessedLines, entryBlock);
+    // PHINode * const partialProcessedPhi = b->CreatePHI(sizeTy, 2);
+    // partialProcessedPhi->addIncoming(subBlockBytes, entryBlock);
     Value * nextStrideNo = b->CreateAdd(strideNo, sz_ONE);
 
-    Value * strideBlockOffset = b->CreateSub(b->CreateUDiv(processedPhi, sz_BLOCKWIDTH), processedBlocks);
+    Value * strideBlockOffset = b->CreateMul(strideNo, sz_BLOCKS_PER_STRIDE);//b->CreateSub(b->CreateUDiv(processedPhi, sz_BLOCKWIDTH), processedBlocks);
     Value * lastLbPosInStride = getLastLineBreakPos(b, sw, sz_BLOCKWIDTH, sz_BLOCKS_PER_STRIDE, strideBlockOffset, endPosReady);
 
     b->SetInsertPoint(endPosReady);
     lastLbPosInStride = b->CreateSelect(b->CreateICmpEQ(lastLbPosInStride, sz_ZERO), lastLbPosInStride, b->CreateSub(lastLbPosInStride, sz_ONE));
-    Value * partialProcessedBlock = b->CreateURem(lastLbPosInStride, sz_BLOCKWIDTH);
-    Value * const nextByteDataProcessed = b->CreateAdd(processedPhi, b->CreateSub(lastLbPosInStride, partialProcessedPhi));
+    // Value * partialProcessedBlock = b->CreateURem(lastLbPosInStride, sz_BLOCKWIDTH);
+    Value * const nextByteDataProcessed = b->CreateAdd(b->CreateAdd(initialProcessedLines, b->CreateMul(strideNo, sz_STRIDE)), lastLbPosInStride); //b->CreateAdd(processedPhi, b->CreateSub(lastLbPosInStride, partialProcessedPhi));
     // b->CallPrintInt("strideNo", strideNo);
     // b->CallPrintInt("index", b->getScalarField("index"));
     // b->CallPrintInt("processedPhi", processedPhi);
@@ -1266,17 +1301,17 @@ void LineBreakPosInit::generateMultiBlockLogic(BuilderRef b, Value * const numOf
     // b->CallPrintInt("lastLbPosInStride", lastLbPosInStride);
     // b->CallPrintInt("partialProcessedPhi", partialProcessedPhi);
     // b->CallPrintInt("nextByteDataProcessed", nextByteDataProcessed);
-    b->CreateStore(b->CreateTrunc(nextByteDataProcessed, b->getInt64Ty()), b->getRawOutputPointer("LFpartialSum", b->getScalarField("index")));
+    b->CreateStore(b->CreateTrunc(b->CreateSelect(b->isFinal(), avail, nextByteDataProcessed), b->getInt64Ty()), b->getRawOutputPointer("LFpartialSum", b->getScalarField("index")));
     b->setScalarField("index", b->CreateAdd(sz_ONE, b->getScalarField("index")));
     strideNo->addIncoming(nextStrideNo, endPosReady);
-    processedPhi->addIncoming(nextByteDataProcessed, endPosReady);
-    partialProcessedPhi->addIncoming(partialProcessedBlock, endPosReady);
+    // processedPhi->addIncoming(nextByteDataProcessed, endPosReady);
+    // partialProcessedPhi->addIncoming(partialProcessedBlock, endPosReady);
     b->CreateCondBr(b->CreateICmpNE(nextStrideNo, numOfStrides), stridePrologue, stridesDone);
 
     b->SetInsertPoint(stridesDone);
-    b->setScalarField("processedSubBlockSize", partialProcessedBlock);
+    // b->setScalarField("processedSubBlockSize", partialProcessedBlock);
     // b->CallPrintInt("lineBreaks-processed", nextByteDataProcessed);
-    b->setProcessedItemCount("lineBreaks", b->CreateSelect(b->isFinal(), avail, nextByteDataProcessed));
+    b->setProcessedItemCount("lineBreaks", avail); //b->CreateSelect(b->isFinal(), avail, nextByteDataProcessed));
 }
 
 FilterCompressedData::FilterCompressedData(BuilderRef b,
@@ -2466,7 +2501,7 @@ void FinalizeCandidateMatches::generateMultiBlockLogic(BuilderRef b, Value * con
 
     Value * pfx_base = sz_C0;
     pfx_base = b->CreateSelect(b->CreateICmpEQ(groupNo, sz_ONE), sz_C8, pfx_base, "pfx_base");
-    pfx_base = b->CreateSelect(b->CreateICmpEQ(groupNo, sz_TWO), sz_E0, pfx_base), "pfx_base";
+    pfx_base = b->CreateSelect(b->CreateICmpEQ(groupNo, sz_TWO), sz_E0, pfx_base, "pfx_base");
     pfx_base = b->CreateSelect(b->CreateICmpEQ(groupNo, sz_THREE), sz_F0, pfx_base, "pfx_base");
 
     Value * lo = b->getSize(4);
