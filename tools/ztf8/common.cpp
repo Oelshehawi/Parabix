@@ -453,3 +453,37 @@ Value * getLastLineBreakPos(BuilderRef b,
     b->CreateCondBr(b->CreateICmpNE(nextBlockNo, sz_BLOCKS_PER_STRIDE), maskInit, lbPosCalculated);
     return newLinebreakPos;
 }
+
+Value * getSegBoundaryPos(BuilderRef b,
+                           ScanWordParameters & sw,
+                           Constant * sz_BLOCKWIDTH,
+                           Constant * sz_BLOCKS_PER_STRIDE,
+                           Value * strideBlockOffset,
+                           BasicBlock * segEndCalculated) {
+    Constant * sz_ZERO = b->getSize(0);
+    Constant * sz_ONE = b->getSize(1);
+    Type * sizeTy = b->getSizeTy();
+    BasicBlock * const entryBlock = b->GetInsertBlock();
+    BasicBlock * const maskInit = b->CreateBasicBlock("maskInit");
+    b->CreateBr(maskInit);
+
+    b->SetInsertPoint(maskInit);
+    PHINode * const blockNo = b->CreatePHI(sizeTy, 2);
+    PHINode * const segEndPos = b->CreatePHI(sizeTy, 2);
+    blockNo->addIncoming(sz_ZERO, entryBlock);
+    segEndPos->addIncoming(sz_ZERO, entryBlock);
+    Value * strideBlockIndex = b->CreateAdd(strideBlockOffset, blockNo);
+    Value * const nextBlockNo = b->CreateAdd(blockNo, sz_ONE);
+    Value * blockOffset = b->CreateMul(blockNo, sz_BLOCKWIDTH);
+    Value * segBlock = b->loadInputStreamBlock("segBreaks", sz_ZERO, strideBlockIndex);
+    Value * const hasSegEnd = b->simd_cttz(b->getBitBlockWidth(), segBlock);
+    Value * segPos = b->CreateZExtOrTrunc(b->CreateExtractElement(b->fwCast(16, hasSegEnd), b->getInt32(0)), sizeTy);
+    // b->CallPrintRegister("segBlock", segBlock);
+    // b->CallPrintInt("segPos", segPos);
+    // update segEndPos only when a new segEnd is seen in the bitblock
+    Value * newSegEndPos = b->CreateSelect(b->CreateICmpEQ(segPos, sz_BLOCKWIDTH), segEndPos, b->CreateAdd(blockOffset, segPos));
+    segEndPos->addIncoming(newSegEndPos, maskInit);
+    blockNo->addIncoming(nextBlockNo, maskInit);
+    b->CreateCondBr(b->CreateICmpNE(nextBlockNo, sz_BLOCKS_PER_STRIDE), maskInit, segEndCalculated);
+    return newSegEndPos;
+}

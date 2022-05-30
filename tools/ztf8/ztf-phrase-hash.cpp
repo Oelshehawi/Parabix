@@ -181,7 +181,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
     P->CreateKernelCall<LineFeedKernelBuilder>(u8basis, LF);
 
     StreamSet * const LFpartialSum = P->CreateStreamSet(1, 64);
-    P->CreateKernelCall<LineBreakPosInit>(LF, LFpartialSum);
+    P->CreateKernelCall<OffsetCalcKernel>(LF, LFpartialSum);
     // P->CreateKernelCall<DebugDisplayKernel>("LFpartialSum", LFpartialSum);
     // Mark all the repeated hashCodes
     std::vector<StreamSet *> allHashMarks;

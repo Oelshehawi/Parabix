@@ -142,6 +142,7 @@ public:
                          StreamSet * const basis,
                          StreamSet * Results,
                          StreamSet * dictStart,
+                         StreamSet * dictEnd,
                          StreamSet * candidateMatchesInDict,
                          StreamSet * nonCandidateMatchesInDict,
                          StreamSet * codeWordInCipherText,

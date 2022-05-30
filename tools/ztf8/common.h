@@ -133,6 +133,14 @@ Value * getLastLineBreakPos(Kernel::BuilderRef b,
                            llvm::Constant * sz_BLOCKS_PER_STRIDE,
                            llvm::Value * strideBlockOffset,
                            llvm::BasicBlock * outputMasksReady);
+
+Value * getSegBoundaryPos(Kernel::BuilderRef b,
+                           ScanWordParameters & sw,
+                           llvm::Constant * sz_BLOCKWIDTH,
+                           llvm::Constant * sz_BLOCKS_PER_STRIDE,
+                           llvm::Value * strideBlockOffset,
+                           llvm::BasicBlock * outputMasksReady);
+
 bool LLVM_READONLY DeferredAttributeIsSet();
 bool LLVM_READONLY DelayedAttributeIsSet();
 bool LLVM_READONLY PrefixCheckIsSet();

@@ -15,12 +15,12 @@
 #include <pablo/builder.hpp>
 #include <pablo/pe_ones.h>
 #include <pablo/pe_debugprint.h>
-// #include <re/ucd/ucd_compiler.hpp>
 #include <re/unicode/resolve_properties.h>
 #include <re/cc/cc_compiler.h>
 #include <re/cc/cc_compiler_target.h>
 #include <llvm/Support/raw_ostream.h>
 #include <sstream>
+#include <kernel/basis/s2p_kernel.h>
 #include <kernel/io/stdout_kernel.h>                 // for StdOutKernel_
 #include <kernel/util/debug_display.h>
 #include <grep/grep_kernel.h>
@@ -456,6 +456,7 @@ ProcessCandidateMatches::ProcessCandidateMatches(BuilderRef kb,
                 StreamSet * basis,
                 StreamSet * results,
                 StreamSet * dictStart,
+                StreamSet * dictEnd,
                 StreamSet * candidateMatchesInDict,
                 StreamSet * nonCandidateMatchesInDict,
                 StreamSet * codeWordInCipherText,
@@ -464,7 +465,8 @@ ProcessCandidateMatches::ProcessCandidateMatches(BuilderRef kb,
 : PabloKernel(kb, "ProcessCandidateMatches_" + std::to_string(matchOnly),
             {Binding{"basis", basis, FixedRate(), LookAhead(encodingScheme.maxEncodingBytes() - 1)},
              Binding{"results", results, FixedRate(), LookAhead(1)}},
-            {Binding{"dictStart", dictStart, FixedRate(), Add1()},
+            {Binding{"dictStart", dictStart}, // FixedRate(), Add1()},
+             Binding{"dictEnd", dictEnd},
              Binding{"candidateMatchesInDict", candidateMatchesInDict, FixedRate(), Add1()},
              Binding{"nonCandidateMatchesInDict", nonCandidateMatchesInDict, FixedRate(), Add1()},
              Binding{"codeWordInCipherText", codeWordInCipherText, FixedRate(), Add1()},
@@ -497,7 +499,7 @@ void ProcessCandidateMatches::generatePabloMethod() {
     PabloAST * hashTableBoundaryEnd = pb.createAnd(hashTableBoundaryCommon, hashTableBoundaryEndHi);
     PabloAST * hashTableBoundaryStartFinal = pb.createAnd(hashTableBoundaryStart, pb.createAdvance(hashTableBoundaryStart, 1));
     PabloAST * hashTableBoundaryEndFinal = pb.createAnd(hashTableBoundaryEnd, pb.createAdvance(hashTableBoundaryEnd, 1));
-    PabloAST * EOFbit = pb.createAtEOF(pb.createAdvance(pb.createOnes(), 1));
+    // PabloAST * EOFbit = pb.createAtEOF(pb.createAdvance(pb.createOnes(), 1));
 
     PabloAST * hashTableSpan = pb.createIntrinsicCall(pablo::Intrinsic::SpanUpTo, {hashTableBoundaryStartFinal, hashTableBoundaryEndFinal});
     PabloAST * toEliminate = pb.createAnd(pb.createLookahead(basis[7], 1), pb.createOr(hashTableBoundaryStart, hashTableBoundaryEnd));
@@ -569,7 +571,10 @@ void ProcessCandidateMatches::generatePabloMethod() {
     // AND with hashTableSpan gived nonCandidateMatchesInDict
     pb.createAssign(pb.createExtract(nonCandidateMatchesInDictVar, pb.getInteger(0)), pb.createAnd(hashTableSpan, pb.createXor(movedCandidateMatches, allGroupStream)));
     pb.createAssign(pb.createExtract(codeWordInCipherTextVar, pb.getInteger(0)), pb.createAnd(allGroupStream, pb.createNot(hashTableSpan)));
-    pb.createAssign(pb.createExtract(getOutputStreamVar("dictStart"), pb.getInteger(0)), pb.createOr(hashTableBoundaryStartFinal, EOFbit));
+    pb.createAssign(pb.createExtract(getOutputStreamVar("dictStart"), pb.getInteger(0)), hashTableBoundaryStartFinal);
+    pb.createAssign(pb.createExtract(getOutputStreamVar("dictEnd"), pb.getInteger(0)), hashTableBoundaryEndFinal);
+    // pb.createDebugPrint(pb.createCount(hashTableBoundaryStartFinal), "s");
+    // pb.createDebugPrint(pb.createCount(hashTableBoundaryEndFinal), "e");
     // Results after eliminating invalid candidate matches
     pb.createAssign(pb.createExtract(getOutputStreamVar("candidateMatchesInCipherText"), pb.getInteger(0)), candidateMatchStart); // candidate marks in dict awa compressed data part
 }
@@ -748,6 +753,7 @@ kernel::StreamSet * kernel::ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> 
                                 bool matchOnlyMode) {
 // NOTE: The grep output requires complete lines to be printed as output and lines may be divided across multiple segments.
     StreamSet * const dictStart = P->CreateStreamSet(1);
+    StreamSet * const dictEnd = P->CreateStreamSet(1);
     StreamSet * const candidateMatchesInDict = P->CreateStreamSet(1);
     StreamSet * const codeWordInCipherText = P->CreateStreamSet(1);
     StreamSet * const nonCandidateMatchesInDict = P->CreateStreamSet(1);
@@ -762,7 +768,7 @@ kernel::StreamSet * kernel::ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> 
     /// WIP: Update results to remove any invalid matches in the dictionary (all done except pfx byte)
     // Input: basis, candidateMatches
     // Output: candidateMatchCodeWordInDict, nonCandidateMatchCodeWordInDict, codeWordInCipherText
-    P->CreateKernelCall<ProcessCandidateMatches>(encodingScheme, Basis, Results, dictStart, candidateMatchesInDict, nonCandidateMatchesInDict, codeWordInCipherText/*all codewords in ciphertext*/, candidateMatchesInCipherText/*plaintext match of sub-expression*/, matchOnlyMode); // add 1-bit at the end of dictEnd stream
+    P->CreateKernelCall<ProcessCandidateMatches>(encodingScheme, Basis, Results, dictStart, dictEnd, candidateMatchesInDict, nonCandidateMatchesInDict, codeWordInCipherText/*all codewords in ciphertext*/, candidateMatchesInCipherText/*plaintext match of sub-expression*/, matchOnlyMode); // add 1-bit at the end of dictEnd stream
     //Perform single scan of compressed data to finalize candidate matches
     StreamSet * const basis_bytes = P->CreateStreamSet(1, 8);
     P->CreateKernelCall<P2SKernel>(Basis, basis_bytes);
@@ -774,25 +780,41 @@ kernel::StreamSet * kernel::ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> 
     StreamSet * MatchesBySegment = P->CreateStreamSet(1, 1);
     // 1-bit per segment indicating presense of candidate matches in the segment
     FilterByMask(P, dictStart, MatchedSegmentEnds, MatchesBySegment);
-    P->CreateKernelCall<DebugDisplayKernel>("MatchesBySegment", MatchesBySegment); // filter the bits that collide with dictionary start and also is a match at the segment end
+    // P->CreateKernelCall<DebugDisplayKernel>("MatchesBySegment", MatchesBySegment); // filter the bits that collide with dictionary start and also is a match at the segment end
+
+    StreamSet * const dictStartPartialSum = P->CreateStreamSet(1, 64);
+    P->CreateKernelCall<SegOffsetCalcKernel>(basis_bytes, dictStart, dictStartPartialSum, true);
+    // P->CreateKernelCall<DebugDisplayKernel>("dictStartPartialSum", dictStartPartialSum);
+    // need to re-create complete dicitonary even if a few segments are to be decompressed
+    StreamSet * const dictEndPartialSum = P->CreateStreamSet(1, 64);
+    P->CreateKernelCall<SegOffsetCalcKernel>(basis_bytes, dictEnd, dictEndPartialSum, false);
+    // P->CreateKernelCall<DebugDisplayKernel>("dictEndPartialSum", dictEndPartialSum);
+
+    // Filter out the match segments -> FIX: some memory access issue persists!!
+    StreamSet * const filtered_bytes = P->CreateStreamSet(1, 8);
+    P->CreateKernelCall<SegmentFilter>(MatchesBySegment, dictStartPartialSum, dictEndPartialSum, basis_bytes, filtered_bytes);
+    // P->CreateKernelCall<StdOutKernel>(filtered_bytes);
+
+    StreamSet * const filtered_basis = P->CreateStreamSet(8);
+    P->CreateKernelCall<S2PKernel>(filtered_bytes, filtered_basis);
+    // P->CreateKernelCall<DebugDisplayKernel>("filtered_basis", filtered_basis);
+//-----------------------------------------------------------------------------------------------------------------------
+    // FilterByMask to filter segments with candidate matches
     StreamSet * MatchedSegmentStarts = P->CreateStreamSet(1, 1);
     SpreadByMask(P, SegmentStarts, MatchesBySegment, MatchedSegmentStarts);
     StreamSet * MatchedSegmentSpans = P->CreateStreamSet(1, 1);
     P->CreateKernelCall<LineSpansKernel>(MatchedSegmentStarts, MatchedSegmentEnds, MatchedSegmentSpans);
     // P->CreateKernelCall<DebugDisplayKernel>("MatchedSegmentSpans", MatchedSegmentSpans);
-
     StreamSet * const toDecompress_basis = P->CreateStreamSet(8);
     FilterByMask(P, MatchedSegmentSpans, Basis, toDecompress_basis);
-    // StreamSet * const bytes = P->CreateStreamSet(1, 8);
-    // P->CreateKernelCall<P2SKernel>(toDecompress_basis, bytes);
-    // P->CreateKernelCall<StdOutKernel>(bytes);
-
+//-----------------------------------------------------------------------------------------------------------------------
     StreamSet * const ztfInsertionLengths = P->CreateStreamSet(5);
-    P->CreateKernelCall<ZTF_PhraseExpansionDecoder>(encodingScheme, Basis, ztfInsertionLengths, false);
+    P->CreateKernelCall<ZTF_PhraseExpansionDecoder>(encodingScheme, filtered_basis, ztfInsertionLengths, false);
     StreamSet * const ztfRunSpreadMask = InsertionSpreadMask(P, ztfInsertionLengths);
     StreamSet * const ztfHash_u8_Basis = P->CreateStreamSet(8);
-    SpreadByMask(P, ztfRunSpreadMask, Basis, ztfHash_u8_Basis);
+    SpreadByMask(P, ztfRunSpreadMask, filtered_basis, ztfHash_u8_Basis);
     P->CreateKernelCall<ZTF_PhraseDecodeLengths>(encodingScheme, 2/*SymCount*/, ztfHash_u8_Basis, decodedMarks, hashtableMarks, filterSpan, false);
+    // P->CreateKernelCall<DebugDisplayKernel>("filterSpan", filterSpan);
     StreamSet * const ztfHash_u8bytes = P->CreateStreamSet(1, 8);
     P->CreateKernelCall<P2SKernel>(ztfHash_u8_Basis, ztfHash_u8bytes);
     return ztfHash_u8bytes;

@@ -129,9 +129,9 @@ private:
     void generateMultiBlockLogic(BuilderRef iBuilder, llvm::Value * const numOfStrides) override;
 };
 
-class LineBreakPosInit final : public MultiBlockKernel {
+class OffsetCalcKernel final : public MultiBlockKernel {
 public:
-    LineBreakPosInit(BuilderRef b,
+    OffsetCalcKernel(BuilderRef b,
                      StreamSet * LF,
                      StreamSet * LFpartialSum,
                      unsigned strideBlocks = 8);
@@ -156,6 +156,33 @@ private:
     const EncodingInfo mEncodingScheme;
     const unsigned mGroupNo;
     const unsigned mNumSym;
+};
+
+class SegOffsetCalcKernel final : public MultiBlockKernel {
+public:
+    SegOffsetCalcKernel(BuilderRef b,
+                     StreamSet * byteData,
+                     StreamSet * segBoundary,
+                     StreamSet * segmentPartialSum,
+                     bool offsetFlag,
+                     unsigned strideBlocks = 8);
+private:
+    void generateMultiBlockLogic(BuilderRef iBuilder, llvm::Value * const numOfStrides) override;
+
+    const bool mOffsetFlag;
+};
+
+class SegmentFilter final : public MultiBlockKernel {
+public:
+    SegmentFilter(BuilderRef b,
+                    StreamSet * const MatchesBySegment,
+                    StreamSet * const offsetStartData,
+                    StreamSet * offsetEndData,
+                    StreamSet * const byteData,
+                    StreamSet * const filtereData,
+                    unsigned strideBlocks = 8);
+private:
+    void generateMultiBlockLogic(BuilderRef iBuilder, llvm::Value * const numOfStrides) override;
 };
 
 }
