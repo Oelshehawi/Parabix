@@ -61,7 +61,6 @@ static cl::OptionCategory ztfHashOptions("ztfHash Options", "ZTF-Hash options.")
 static cl::opt<std::string> inputFile(cl::Positional, cl::desc("<input file>"), cl::Required, cl::cat(ztfHashOptions));
 static cl::opt<bool> Decompression("d", cl::desc("Decompress from ZTF-Runs to UTF-8."), cl::cat(ztfHashOptions), cl::init(false));
 static cl::alias DecompressionAlias("decompress", cl::desc("Alias for -d"), cl::aliasopt(Decompression));
-static cl::opt<bool> UseByteFilterByMask("byte-filter-by-mask", cl::desc("Use byte deletion FilterByMask"), cl::init(false), cl::cat(ztfHashOptions));
 
 typedef void (*ztfHashFunctionType)(uint32_t fd);
 
@@ -92,7 +91,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
     P->CreateKernelCall<RunIndex>(symbolRuns, runIndex, overflow);
 
     StreamSet * const bixHashes = P->CreateStreamSet(encodingScheme1.MAX_HASH_BITS);
-    P->CreateKernelCall<BixHash>(u8basis, symbolRuns, bixHashes, 0);
+    P->CreateKernelCall<BixHash>(u8basis, symbolRuns, bixHashes);
     //P->CreateKernelCall<DebugDisplayKernel>("bixHashes", bixHashes);
 
     StreamSet * const hashValues = P->CreateStreamSet(1, 16);
@@ -168,7 +167,7 @@ ztfHashFunctionType ztfHash_decompression_gen (CPUDriver & driver) {
     P->CreateKernelCall<RunIndex>(symbolRuns, runIndex, overflow);
 
     StreamSet * const bixHashes = P->CreateStreamSet(encodingScheme1.MAX_HASH_BITS);
-    P->CreateKernelCall<BixHash>(ztfHash_u8_Basis, symbolRuns, bixHashes, 0);
+    P->CreateKernelCall<BixHash>(ztfHash_u8_Basis, symbolRuns, bixHashes);
 
     StreamSet * const hashValues = P->CreateStreamSet(1, 16);
     std::vector<StreamSet *> combinedHashData = {bixHashes, runIndex};
@@ -205,17 +204,17 @@ int main(int argc, char *argv[]) {
     if (LLVM_UNLIKELY(fd == -1)) {
         errs() << "Error: cannot open " << inputFile << " for processing. Skipped.\n";
     } else {
+        ztfHashFunctionType func = nullptr;
+        if (Decompression) {
+            func = ztfHash_decompression_gen(pxDriver);
+        } else {
+            func = ztfHash_compression_gen(pxDriver);
+        }
         #ifdef REPORT_PAPI_TESTS
         papi::PapiCounter<4> jitExecution{{PAPI_L3_TCM, PAPI_L3_TCA, PAPI_TOT_INS, PAPI_TOT_CYC}};
         jitExecution.start();
         #endif
-        if (Decompression) {
-            auto ztfHashDecompressionFunction = ztfHash_decompression_gen(pxDriver);
-            ztfHashDecompressionFunction(fd);
-        } else {
-            auto ztfHashCompressionFunction = ztfHash_compression_gen(pxDriver);
-            ztfHashCompressionFunction(fd);
-        }
+        func(fd);
         #ifdef REPORT_PAPI_TESTS
         jitExecution.stop();
         jitExecution.write(std::cerr);

@@ -107,11 +107,11 @@ inline void PipelineCompiler::readExternalConsumerItemCounts(BuilderRef b) {
         const BufferNode & bn = mBufferGraph[streamSet];
         if (LLVM_LIKELY(bn.isOwned())) {
             const BufferPort & externalPort = mBufferGraph[e];
-            Value * const consumed = getConsumedOutputItems(externalPort.Port.Number); assert (consumed);
             const auto numOfIndependentConsumers = out_degree(streamSet, mConsumerGraph);
             const auto producer = parent(streamSet, mBufferGraph);
             if (LLVM_UNLIKELY((numOfIndependentConsumers != 0) || (producer == PipelineInput))) {
                 assert (!bn.CrossesHybridThreadBarrier);
+                Value * const consumed = getConsumedOutputItems(externalPort.Port.Number); assert (consumed);
                 setConsumedItemCount(b, streamSet, consumed, 0);
             }
         }
@@ -213,21 +213,21 @@ inline void PipelineCompiler::initializeConsumedItemCount(BuilderRef b, const un
 }
 
 /** ------------------------------------------------------------------------------------------------------------- *
- * @brief createConsumedPhiNodes
+ * @brief createConsumedPhiNodesAtExit
  ** ------------------------------------------------------------------------------------------------------------- */
-inline void PipelineCompiler::createConsumedPhiNodes(BuilderRef b) {
+inline void PipelineCompiler::createConsumedPhiNodesAtExit(BuilderRef b) {
     IntegerType * const sizeTy = b->getSizeTy();
     for (const auto e : make_iterator_range(in_edges(mKernelId, mConsumerGraph))) {
         const ConsumerEdge & c = mConsumerGraph[e];
         if (c.Flags & ConsumerEdge::UpdatePhi) {
             const auto streamSet = source(e, mConsumerGraph);
             const ConsumerNode & cn = mConsumerGraph[streamSet];
+            assert (isFromCurrentFunction(b, cn.Consumed, true));
             if (LLVM_LIKELY(cn.PhiNode == nullptr)) {
                 const ConsumerEdge & c = mConsumerGraph[e];
                 const StreamSetPort port(PortType::Input, c.Port);
                 const auto prefix = makeBufferName(mKernelId, port);
                 PHINode * const consumedPhi = b->CreatePHI(sizeTy, 2, prefix + "_consumed");
-                assert (isFromCurrentFunction(b, cn.Consumed, false));
                 cn.PhiNode = consumedPhi;
             }
         }
@@ -328,6 +328,9 @@ void PipelineCompiler::setConsumedItemCount(BuilderRef b, const size_t streamSet
     const auto producer = source(pe, mBufferGraph);
     const BufferPort & rd = mBufferGraph[pe];
     Value * ptr = nullptr;
+
+    assert (isFromCurrentFunction(b, consumed.get(), false));
+
     if (LLVM_LIKELY(producer != PipelineInput || mTraceIndividualConsumedItemCounts)) {
         const auto prefix = makeBufferName(producer, rd.Port);
 
@@ -365,11 +368,18 @@ void PipelineCompiler::setConsumedItemCount(BuilderRef b, const size_t streamSet
                 Value * const fatalError = b->CreateICmpEQ(mTerminatedAtLoopExitPhi, fatal);
                 Value * const valid = b->CreateOr(fullyConsumed, fatalError);
 
+                Constant * withOrWithout = nullptr;
+                if (mMayLoopToEntry) {
+                    withOrWithout = b->GetString("with");
+                } else {
+                    withOrWithout = b->GetString("without");
+                }
+
                 b->CreateAssert(valid,
                                 "%s.%s: local available item count (%" PRId64 ") does not match "
-                                "its consumed item count (%" PRId64 ")",
+                                "its consumed item count (%" PRId64 ") in kernel %s loop back support",
                                 mCurrentKernelName, bindingName,
-                                produced, consumed);
+                                produced, consumed, withOrWithout);
             }
 
         }

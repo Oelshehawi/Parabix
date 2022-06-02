@@ -3,17 +3,24 @@
 
 #include <kernel/pipeline/pipeline_kernel.h>
 #include <kernel/core/kernel_compiler.h>
+#include <kernel/pipeline/optimizationbranch.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/Support/ErrorHandling.h>
 #include <llvm/Transforms/Utils/Local.h>
 #include <llvm/ADT/STLExtras.h>
-#include "analysis/pipeline_analysis.hpp"
 #include <boost/multi_array.hpp>
 #include <boost/intrusive/detail/math.hpp>
 #include <boost/utility/value_init.hpp>
 #include <boost/format.hpp>
+
 #include "config.h"
+#include "common/common.hpp"
+#include "common/graphs.h"
+
+#include <boost/graph/connected_components.hpp>
+#include <boost/graph/dominator_tree.hpp>
+#include <boost/graph/bron_kerbosch_all_cliques.hpp>
 
 using namespace boost;
 using namespace boost::adaptors;
@@ -25,6 +32,8 @@ using boost::intrusive::detail::ceil_pow2;
 using boost::intrusive::detail::is_pow2;
 using namespace llvm;
 using IDISA::FixedVectorType;
+
+#include "analysis/pipeline_analysis.hpp"
 
 // TODO: merge Cycle counter and PAPI?
 
@@ -68,21 +77,27 @@ const static std::string KERNEL_THREAD_LOCAL_SUFFIX = ".KTL";
 #ifndef USE_FIXED_SEGMENT_NUMBER_INCREMENTS
 const static std::string NEXT_LOGICAL_SEGMENT_NUMBER = "@NLSN";
 #endif
-const static std::string LOGICAL_SEGMENT_SUFFIX = ".LSN";
+
+#define SYNC_LOCK_FULL 0U
+#define SYNC_LOCK_PRE_INVOCATION 1U
+#define SYNC_LOCK_POST_INVOCATION 2U
+
+const static std::array<std::string, 3> LOGICAL_SEGMENT_SUFFIX = { ".LSN", ".LSNs", ".LSNt" };
+
+const static std::string INTERNALLY_SYNCHRONIZED_SUB_SEGMENT_SUFFIX = ".ISS";
 
 const static std::string DEBUG_FD = ".DFd";
 
-const static std::string HYBRID_SYNCHRONIZATION_SUFFIX = ".HSS";
+const static std::array<std::string, 2> OPT_BR_INFIX = { ".0", ".1" };
 
 const static std::string ITERATION_COUNT_SUFFIX = ".ITC";
 const static std::string TERMINATION_PREFIX = "@TERM";
 const static std::string CONSUMER_TERMINATION_COUNT_PREFIX = "@PTC";
 const static std::string ITEM_COUNT_SUFFIX = ".IN";
+const static std::string STATE_FREE_INTERNAL_ITEM_COUNT_SUFFIX = ".SIN";
 const static std::string DEFERRED_ITEM_COUNT_SUFFIX = ".DC";
-const static std::string EXTERNAL_IO_PRIOR_ITEM_COUNT_SUFFIX = ".EP";
 const static std::string CONSUMED_ITEM_COUNT_SUFFIX = ".CON";
 const static std::string HYBRID_THREAD_CONSUMED_ITEM_COUNT_SUFFIX = ".CHN";
-const static std::string DEBUG_CONSUMED_ITEM_COUNT_SUFFIX = ".DCON";
 
 const static std::string STATISTICS_CYCLE_COUNT_SUFFIX = ".SCy";
 const static std::string STATISTICS_CYCLE_COUNT_SQUARE_SUM_SUFFIX = ".SCY";
@@ -102,6 +117,8 @@ const static std::string STATISTICS_PRODUCED_ITEM_COUNT_SUFFIX = ".SPIC";
 const static std::string STATISTICS_UNCONSUMED_ITEM_COUNT_SUFFIX = ".SUIC";
 
 const static std::string LAST_GOOD_VIRTUAL_BASE_ADDRESS = ".LGA";
+
+const static std::string PENDING_FREEABLE_BUFFER_ADDRESS = ".PFA";
 
 using ArgVec = Vec<Value *, 64>;
 
@@ -141,6 +158,9 @@ public:
     #endif
 
     unsigned getCacheLineGroupId(const unsigned kernelId) const {
+        if (codegen::DebugOptionIsSet(codegen::DisableCacheAlignedKernelStructs)) {
+            return 0;
+        }
         #ifdef GROUP_SHARED_KERNEL_STATE_INTO_CACHE_LINE_ALIGNED_REGIONS
         // if (mNumOfThreads > 1) {
             return kernelId;
@@ -255,7 +275,9 @@ public:
 
     void writeKernelCall(BuilderRef b);
     ArgVec buildKernelCallArgumentList(BuilderRef b);
+    ArgVec buildKernelCallArgumentList(BuilderRef b, const Kernel * const kernelObj);
     void updateProcessedAndProducedItemCounts(BuilderRef b);
+    void readAndUpdateInternalProcessedAndProducedItemCounts(BuilderRef b);
     void readReturnedOutputVirtualBaseAddresses(BuilderRef b) const;
     Value * addVirtualBaseAddressArg(BuilderRef b, const StreamSetBuffer * buffer, ArgVec & args);
 
@@ -339,7 +361,7 @@ public:
     void initializeConsumedItemCount(BuilderRef b, const unsigned kernelId, const StreamSetPort outputPort, Value * const produced);
     void initializePipelineInputConsumedPhiNodes(BuilderRef b);
     void readExternalConsumerItemCounts(BuilderRef b);
-    void createConsumedPhiNodes(BuilderRef b);
+    void createConsumedPhiNodesAtExit(BuilderRef b);
     void phiOutConsumedItemCountsAfterInitiallyTerminated(BuilderRef b);
     void readConsumedItemCounts(BuilderRef b);
     Value * readConsumedItemCount(BuilderRef b, const size_t streamSet);
@@ -351,7 +373,7 @@ public:
 
 // buffer management codegen functions
 
-    void addBufferHandlesToPipelineKernel(BuilderRef b, const unsigned index);
+    void addBufferHandlesToPipelineKernel(BuilderRef b, const unsigned index, const unsigned groupId);
     void allocateOwnedBuffers(BuilderRef b, Value * const expectedNumOfStrides, const bool nonLocal);
     void loadInternalStreamSetHandles(BuilderRef b, const bool nonLocal);
     void releaseOwnedBuffers(BuilderRef b, const bool nonLocal);
@@ -360,7 +382,7 @@ public:
 
     void prepareLinearThreadLocalOutputBuffers(BuilderRef b);
 
-    Value * getVirtualBaseAddress(BuilderRef b, const BufferPort & rateData, const BufferNode & bn, Value * position, Value * isFinal, const bool prefetch, const bool write) const;
+    Value * getVirtualBaseAddress(BuilderRef b, const BufferPort & rateData, const BufferNode & bn, Value * position, const bool prefetch, const bool write) const;
     void getInputVirtualBaseAddresses(BuilderRef b, Vec<Value *> & baseAddresses) const;
     void getZeroExtendedInputVirtualBaseAddresses(BuilderRef b, const Vec<Value *> & baseAddresses, Value * const zeroExtensionSpace, Vec<Value *> & zeroExtendedVirtualBaseAddress) const;
 
@@ -391,7 +413,8 @@ public:
     void printOptionalBufferExpansionHistory(BuilderRef b);
 
     void initializeStridesPerSegment(BuilderRef b) const;
-    void recordStridesPerSegment(BuilderRef b, unsigned kernelId, Value * totalStrides) const;
+    void recordStridesPerSegment(BuilderRef b, unsigned kernelId, Value * const totalStrides) const;
+    void concludeStridesPerSegmentRecording(BuilderRef b) const;
     void printOptionalStridesPerSegment(BuilderRef b) const;
     void printOptionalBlockedIOPerSegment(BuilderRef b) const;
 
@@ -400,7 +423,7 @@ public:
     void printProducedItemCountDeltas(BuilderRef b) const;
 
     void addUnconsumedItemCountProperties(BuilderRef b, unsigned kernel) const;
-    void recordUnconsumedItemCounts(BuilderRef b) const;
+    void recordUnconsumedItemCounts(BuilderRef b);
     void printUnconsumedItemCounts(BuilderRef b) const;
 
     void addItemCountDeltaProperties(BuilderRef b, const unsigned kernel, const StringRef suffix) const;
@@ -418,7 +441,6 @@ public:
 
     bool isBounded() const;
     bool requiresExplicitFinalStride() const ;
-    bool mayLoopBackToEntry() const;
     void identifyPipelineInputs(const unsigned kernelId);
     void identifyLocalPortIds(const unsigned kernelId);
     bool hasExternalIO(const size_t kernel) const;
@@ -429,10 +451,9 @@ public:
     void readFirstSegmentNumber(BuilderRef b);
     void obtainCurrentSegmentNumber(BuilderRef b, BasicBlock * const entryBlock);
     void incrementCurrentSegNo(BuilderRef b, BasicBlock * const exitBlock);
-    void acquireSynchronizationLock(BuilderRef b, const unsigned kernelId);
-    void releaseSynchronizationLock(BuilderRef b, const unsigned kernelId);
-    void verifyCurrentSynchronizationLock(BuilderRef b) const;
-    Value * getSynchronizationLockPtrForKernel(BuilderRef b, const unsigned kernelId) const;
+    void acquireSynchronizationLock(BuilderRef b, const unsigned kernelId, const unsigned lockType);
+    void releaseSynchronizationLock(BuilderRef b, const unsigned kernelId, const unsigned lockType);
+    Value * getSynchronizationLockPtrForKernel(BuilderRef b, const unsigned kernelId, const unsigned lockType) const;
 
     void acquireHybridThreadSynchronizationLock(BuilderRef b);
     void releaseHybridThreadSynchronizationLock(BuilderRef b);
@@ -440,13 +461,17 @@ public:
 
 // family functions
 
-    void addFamilyKernelProperties(BuilderRef b, const unsigned index) const;
+    void addFamilyKernelProperties(BuilderRef b, const unsigned kernelId, const unsigned groupId) const;
 
     void bindFamilyInitializationArguments(BuilderRef b, ArgIterator & arg, const ArgIterator & arg_end) const override;
 
 // thread local functions
 
     Value * getThreadLocalHandlePtr(BuilderRef b, const unsigned kernelIndex) const;
+
+// optimization branch functions
+    bool isEitherOptimizationBranchKernelInternallySynchronized() const;
+    Value * checkOptimizationBranchSpanLength(BuilderRef b, Value * const numOfLinearStrides);
 
 // papi instrumentation functions
 #ifdef ENABLE_PAPI
@@ -482,7 +507,7 @@ public:
     Value * getFamilyFunctionFromKernelState(BuilderRef b, Type * const type, const std::string &suffix) const;
     Value * callKernelInitializeFunction(BuilderRef b, const ArgVec & args) const;
     Value * getKernelAllocateSharedInternalStreamSetsFunction(BuilderRef b) const;
-    Value * callKernelInitializeThreadLocalFunction(BuilderRef b, Value * handle) const;
+    void callKernelInitializeThreadLocalFunction(BuilderRef b) const;
     Value * getKernelAllocateThreadLocalInternalStreamSetsFunction(BuilderRef b) const;
     Value * getKernelDoSegmentFunction(BuilderRef b) const;
     Value * callKernelFinalizeThreadLocalFunction(BuilderRef b, const SmallVector<Value *, 2> & args) const;
@@ -519,13 +544,15 @@ public:
 
     void clearInternalStateForCurrentKernel();
     void initializeKernelAssertions(BuilderRef b);
-    void verifyBufferRelationships() const;
+  //  void verifyBufferRelationships() const;
 
     bool hasAtLeastOneNonGreedyInput() const;
+    bool isDataParallel(const size_t kernel) const;
+    bool isCurrentKernelStateFree() const;
 
 protected:
 
-    Allocator									mAllocator;
+    SimulationAllocator							mAllocator;
 
     const bool                       			CheckAssertions;
     const bool                                  mTraceProcessedProducedItemCounts;
@@ -553,7 +580,7 @@ protected:
 
     const size_t                                RequiredThreadLocalStreamSetMemory;
 
-    const bool                                  ExternallySynchronized;
+    const bool                                  mIsNestedPipeline;
     const bool                                  PipelineHasTerminationSignal;
     const bool                                  HasZeroExtendedStream;
     const bool                                  EnableCycleCounter;
@@ -631,7 +658,9 @@ protected:
     FixedVector<Value *>                        mLocallyAvailableItems;
 
     FixedVector<Value *>                        mScalarValue;
-    BitVector                                   RequiresSynchronization;
+    BitVector                                   mRequiresSynchronization;
+    BitVector                                   mIsStatelessKernel;
+    BitVector                                   mIsInternallySynchronized;
 
     // partition state
     FixedVector<BasicBlock *>                   mPartitionEntryPoint;
@@ -659,6 +688,10 @@ protected:
     PartitionPhiNodeTable                       mPartitionTerminationSignalPhi;
     FixedVector<PHINode *>                      mPartitionPipelineProgressPhi;
 
+    // optimization branch
+    PHINode *                                   mOptimizationBranchPriorScanStatePhi = nullptr;
+    Value *                                     mOptimizationBranchSelectedBranch = nullptr;
+
     // kernel state
     Value *                                     mInitialTerminationSignal = nullptr;
     Value *                                     mInitiallyTerminated = nullptr;
@@ -683,10 +716,9 @@ protected:
     PHINode *                                   mFixedRateFactorPhi = nullptr;
     PHINode *                                   mIsFinalInvocationPhi = nullptr;
     Value *                                     mIsFinalInvocation = nullptr;
+    Value *                                     mHasMoreInput = nullptr;
     std::array<Value *, 2>                      mAnyClosed;
-
     BitVector                                   mHasPipelineInput;
-
     Rational                                    mFixedRateLCM;
     Value *                                     mTerminatedExplicitly = nullptr;
     Value *                                     mBranchToLoopExit = nullptr;
@@ -697,9 +729,12 @@ protected:
     bool                                        mKernelCanTerminateEarly = false;
     bool                                        mHasExplicitFinalPartialStride = false;
     bool                                        mIsPartitionRoot = false;
+    bool                                        mIsOptimizationBranch = false;
     bool                                        mMayLoopToEntry = false;
     bool                                        mCheckInputChannels = false;
     bool                                        mExecuteStridesIndividually = false;
+    bool                                        mCurrentKernelIsStateFree = false;
+    bool                                        mAllowDataParallelExecution = false;
 
     unsigned                                    mNumOfAddressableItemCount = 0;
     unsigned                                    mNumOfVirtualBaseAddresses = 0;
@@ -721,6 +756,7 @@ protected:
     InputPortVector<Value *>                    mProcessedItemCount;
     InputPortVector<Value *>                    mProcessedDeferredItemCountPtr;
     InputPortVector<Value *>                    mProcessedDeferredItemCount;
+    InputPortVector<PHINode *>                  mConsumedItemCountsAtLoopExitPhi; // exiting the kernel
     InputPortVector<PHINode *>                  mUpdatedProcessedPhi; // exiting the kernel
     InputPortVector<PHINode *>                  mUpdatedProcessedDeferredPhi;
     InputPortVector<Value *>                    mFullyProcessedItemCount; // *after* exiting the kernel
@@ -772,6 +808,7 @@ protected:
     Value *                                     mCurrentKernelName = nullptr;    
     FixedVector<Value *>                        mKernelName;
 
+
     #ifndef NDEBUG
     FunctionType *                              mKernelDoSegmentFunctionType = nullptr;
     #endif
@@ -795,17 +832,15 @@ inline PipelineCompiler::PipelineCompiler(BuilderRef b, PipelineKernel * const p
     // resolve it correctly and clang requires -O2 or better.
 }
 
+
+
 /** ------------------------------------------------------------------------------------------------------------- *
  * @brief constructor
  ** ------------------------------------------------------------------------------------------------------------- */
 PipelineCompiler::PipelineCompiler(PipelineKernel * const pipelineKernel, PipelineAnalysis && P)
 : KernelCompiler(pipelineKernel)
 , PipelineCommonGraphFunctions(mStreamGraph, mBufferGraph)
-#ifdef FORCE_PIPELINE_ASSERTIONS
-, CheckAssertions(true)
-#else
-, CheckAssertions(codegen::DebugOptionIsSet(codegen::EnableAsserts))
-#endif
+, CheckAssertions(codegen::DebugOptionIsSet(codegen::EnableAsserts) || codegen::DebugOptionIsSet(codegen::EnablePipelineAsserts))
 , mTraceProcessedProducedItemCounts(P.mTraceProcessedProducedItemCounts)
 , mTraceDynamicBuffers(codegen::DebugOptionIsSet(codegen::TraceDynamicBuffers))
 , mTraceIndividualConsumedItemCounts(P.mTraceIndividualConsumedItemCounts)
@@ -825,7 +860,7 @@ PipelineCompiler::PipelineCompiler(PipelineKernel * const pipelineKernel, Pipeli
 
 , RequiredThreadLocalStreamSetMemory(P.RequiredThreadLocalStreamSetMemory)
 
-, ExternallySynchronized(pipelineKernel->hasAttribute(AttrId::InternallySynchronized))
+, mIsNestedPipeline(pipelineKernel->hasAttribute(AttrId::InternallySynchronized))
 , PipelineHasTerminationSignal(pipelineKernel->canSetTerminateSignal())
 , HasZeroExtendedStream(P.HasZeroExtendedStream)
 , EnableCycleCounter(DebugOptionIsSet(codegen::EnableCycleCounter))
@@ -857,7 +892,9 @@ PipelineCompiler::PipelineCompiler(PipelineKernel * const pipelineKernel, Pipeli
 , mLocallyAvailableItems(FirstStreamSet, LastStreamSet, mAllocator)
 
 , mScalarValue(FirstKernel, LastScalar, mAllocator)
-, RequiresSynchronization(PipelineOutput + 1)
+, mRequiresSynchronization(PipelineOutput + 1)
+, mIsStatelessKernel(PipelineOutput + 1)
+, mIsInternallySynchronized(PipelineOutput + 1)
 
 , mPartitionEntryPoint(PartitionCount + 1, mAllocator)
 
@@ -883,6 +920,7 @@ PipelineCompiler::PipelineCompiler(PipelineKernel * const pipelineKernel, Pipeli
 , mProcessedItemCount(P.MaxNumOfInputPorts, mAllocator)
 , mProcessedDeferredItemCountPtr(P.MaxNumOfInputPorts, mAllocator)
 , mProcessedDeferredItemCount(P.MaxNumOfInputPorts, mAllocator)
+, mConsumedItemCountsAtLoopExitPhi(P.MaxNumOfInputPorts, mAllocator)
 , mUpdatedProcessedPhi(P.MaxNumOfInputPorts, mAllocator)
 , mUpdatedProcessedDeferredPhi(P.MaxNumOfInputPorts, mAllocator)
 , mFullyProcessedItemCount(P.MaxNumOfInputPorts, mAllocator)
@@ -981,6 +1019,7 @@ LLVM_READNONE inline unsigned getItemWidth(const Type * ty ) {
 #include "synchronization_logic.hpp"
 #include "debug_messages.hpp"
 #include "codegen/buffer_manipulation_logic.hpp"
+#include "codegen/optimization_branch_logic.hpp"
 #include "pipeline_optimization_logic.hpp"
 #include "papi_instrumentation_logic.hpp"
 

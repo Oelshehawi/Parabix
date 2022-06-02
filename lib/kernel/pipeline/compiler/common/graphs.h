@@ -417,10 +417,9 @@ struct PartitionData {
     KernelIdVector          Kernels;
     std::vector<Rational>   Repetitions;
     OrderingDAWG            Orderings;
+    Rational                ExpectedStridesPerSegment{1};
+    Rational                StridesPerSegmentCoV{0};
     unsigned                LinkedGroupId = 0;
-
-
-//    Rational                ExpectedRepetitions{0};
 
 };
 

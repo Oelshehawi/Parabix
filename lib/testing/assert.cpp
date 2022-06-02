@@ -73,6 +73,7 @@ void StreamEquivalenceKernel::generateMultiBlockLogic(BuilderRef b, Value * cons
     if (FW != 1) {
         blockOffset = b->CreateAdd(strideNo, initialOffset);
     }
+
     for (uint32_t i = 0; i < COUNT; ++i) {
         Value * lhs;
         Value * rhs;

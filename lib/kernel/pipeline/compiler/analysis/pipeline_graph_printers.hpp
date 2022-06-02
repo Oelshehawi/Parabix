@@ -5,7 +5,7 @@
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/graph/strong_components.hpp>
 
-// #define USE_SIMPLE_BUFFER_GRAPH
+#define USE_SIMPLE_BUFFER_GRAPH
 
 namespace kernel {
 
@@ -258,9 +258,6 @@ void PipelineAnalysis::printBufferGraph(raw_ostream & out) const {
         if (bn.isUnowned()) {
             out << 'U';
         }
-        if (bn.isExternal()) {
-            out << 'P';
-        }
         if (bn.IsLinear) {
             out << 'L';
         }
@@ -357,10 +354,13 @@ void PipelineAnalysis::printBufferGraph(raw_ostream & out) const {
         }        
     };
 
-    auto printKernel = [&](const unsigned kernel, const StringRef name, const bool ignorePartition) {
+
+
+    auto printKernel = [&](const unsigned kernel, const StringRef name,
+                           const bool ignorePartition, const bool hideKernel) {
         checkOpenPartitionLabel(kernel, ignorePartition);
 
-        if (ignorePartition && degree(kernel, mBufferGraph) == 0) {
+        if (hideKernel) {
             return;
         }
 
@@ -368,13 +368,11 @@ void PipelineAnalysis::printBufferGraph(raw_ostream & out) const {
 
         assert (kernelObj);
 
-        const auto explicitFinalPartialStride = kernelObj->requiresExplicitPartialFinalStride();
         const auto nonLinear = mayHaveNonLinearIO(kernel);
 
         const auto borders = nonLinear ? '2' : '1';
         out << "v" << kernel << " [label=\"[" <<
                 kernel << "] " << name << "\\n";
-        #ifndef USE_SIMPLE_BUFFER_GRAPH
         if (MinimumNumOfStrides.size() > 0) {
             out << " Expected: [";
             if (MaximumNumOfStrides.size() > 0) {
@@ -389,26 +387,19 @@ void PipelineAnalysis::printBufferGraph(raw_ostream & out) const {
             }
             out << "\\n";
         }
-        #endif
+        if (isKernelStateFree(kernel)) {
+            out << "<StateFree>\\n";
+        }
+        if (kernelObj->hasAttribute(AttrId::InternallySynchronized)) {
+            out << "<InternallySynchronized>\\n";
+        }
         if (kernelObj->canSetTerminateSignal()) {
             out << "<CanTerminateEarly>\\n";
         }
-#if 0
-        if (firstKernelInPartition) {
-            if (mTerminationCheck[currentPartition]) {
-                out << " T:";
-                if (mTerminationCheck[currentPartition] & TerminationCheckFlag::Soft) {
-                    out << 'S';
-                }
-                if (mTerminationCheck[currentPartition] & TerminationCheckFlag::Hard) {
-                    out << 'H';
-                }
-            }
-        }
-#endif
+
         out << "\" shape=rect,style=rounded,peripheries=" << borders;
         #ifndef USE_SIMPLE_BUFFER_GRAPH
-        if (explicitFinalPartialStride) {
+        if (kernelObj->requiresExplicitPartialFinalStride()) {
             out << ",color=\"blue\"";
         }
         #endif
@@ -430,15 +421,24 @@ void PipelineAnalysis::printBufferGraph(raw_ostream & out) const {
            // "compound=true;"
            "\n";
 
-    printKernel(PipelineInput, "P_{in}", true);
+    printKernel(PipelineInput, "P_{in}", true, out_degree(PipelineInput, mBufferGraph) == 0);
     firstKernelOfPartition[0] = PipelineInput;
     for (unsigned i = FirstKernel; i <= LastKernel; ++i) {
         const Kernel * const kernel = getKernel(i); assert (kernel);
         auto name = kernel->getName();
         boost::replace_all(name, "\"", "\\\"");
-        printKernel(i, name, false);
+        printKernel(i, name, false, false);
     }
-    printKernel(PipelineOutput, "P_{out}", true);
+
+    bool hidePipelineOutput = in_degree(PipelineOutput, mBufferGraph) == 0;
+    for (auto i = KernelPartitionId[FirstKernel]; i < KernelPartitionId[LastKernel]; ++i) {
+        if (mPartitionJumpIndex[i] == KernelPartitionId[PipelineOutput]) {
+            hidePipelineOutput = false;
+            break;
+        }
+    }
+
+    printKernel(PipelineOutput, "P_{out}", true, hidePipelineOutput);
     firstKernelOfPartition[PartitionCount - 1] = PipelineOutput;
 
     for (auto e : make_iterator_range(edges(mBufferGraph))) {
@@ -508,6 +508,31 @@ void PipelineAnalysis::printBufferGraph(raw_ostream & out) const {
             }
         }
         #endif
+
+        using DistId = ProcessingRateProbabilityDistribution::DistributionTypeId;
+
+
+
+        const auto & D = binding.getDistribution();
+        switch (D.getTypeId()) {
+            case DistId::Uniform: break;
+            case DistId::Normal:
+                out << " [Dist: " << "Normal "
+                    << llvm::format("%0.2f", D.getMean())
+                    << ","
+                    << llvm::format("%0.2f", D.getStdDev()) << "]";
+                break;
+            case DistId::Gamma:
+                out << " [Dist: " << "Gamma "
+                    << llvm::format("%0.2f", D.getAlpha())
+                    << ","
+                    << llvm::format("%0.2f", D.getBeta()) << "]";
+                break;
+            case DistId::Maximum:
+                out << "[Dist: " << "Max" << "]";
+                break;
+        }
+
         if (port.LookBehind) {
             out << " [LB:" << port.LookBehind << ']';
         }
@@ -528,7 +553,6 @@ void PipelineAnalysis::printBufferGraph(raw_ostream & out) const {
         out << "];\n";
     }
 
-    #ifndef USE_SIMPLE_BUFFER_GRAPH
     for (unsigned i = 0; i < PartitionCount; ++i) {
         const auto a = i;
         const auto b = mPartitionJumpIndex[i];
@@ -537,12 +561,13 @@ void PipelineAnalysis::printBufferGraph(raw_ostream & out) const {
             const auto t = firstKernelOfPartition[b];
             out << "v" << s << " -> v" << t <<
                    " ["
-                      "style=\"dashed,bold\","
-                      "color=\"purple\""
+                      "style=\"dotted,bold\","
+                      "color=\"red\""
                    "];\n";
         }
     }
 
+    #ifndef USE_SIMPLE_BUFFER_GRAPH
     for (const auto e : make_iterator_range(edges(mConsumerGraph))) {
 
         const auto a = source(e, mConsumerGraph);

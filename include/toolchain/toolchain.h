@@ -40,6 +40,7 @@ enum DebugFlags {
     TraceUnconsumedItemCounts,
     TraceBlockedIO,
     EnableAsserts,
+    EnablePipelineAsserts,
     EnableMProtect,
     EnableCycleCounter,
     EnableBlockingIOCounter,
@@ -48,8 +49,10 @@ enum DebugFlags {
     #endif
     DisableIndirectBranch,
     DisableThreadLocalStreamSets,
+    DisableCacheAlignedKernelStructs,
     PrintPipelineGraph,
     PrintKernelSizes,
+    ForcePipelineRecompilation,
     DebugFlagSentinel
 };
 
@@ -85,6 +88,7 @@ extern unsigned TaskThreads;
 extern unsigned SegmentThreads;
 extern unsigned ScanBlocks;
 extern bool EnableObjectCache;
+extern bool EnablePipelineObjectCache;
 extern bool TraceObjectCache;
 extern unsigned GroupNum;
 extern std::string ProgramName;

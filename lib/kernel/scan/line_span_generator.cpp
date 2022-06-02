@@ -40,7 +40,8 @@ LineSpanFilterKernel::LineSpanFilterKernel(BuilderRef b, StreamSet * lineNumbers
     //
     // The rate of consumption of `spans` is also unknown as it relates to the
     // item values of `lineNumbers`.
-    {{"lineNumbers", lineNumbers, BoundedRate(0, 1)}, {"spans", spans, BoundedRate(0, 1)}},
+    {{"lineNumbers", lineNumbers, BoundedRate(0, 1)},
+     {"spans", spans, BoundedRate(0, 1)}},
     {{"output", output, BoundedRate(0, 1)}},
     {}, {}, {})
 {
@@ -111,5 +112,6 @@ void LineSpanFilterKernel::generateMultiBlockLogic(BuilderRef b, Value * const n
 
     b->SetInsertPoint(block_Exit);
 }
+
 
 } // namespace kernel

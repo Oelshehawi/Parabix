@@ -102,7 +102,6 @@ void addKernelProperties(const std::vector<Kernel *> & kernels, Kernel * const o
     bool canTerminate = false;
     bool sideEffecting = false;
     bool fatalTermination = false;
-    bool hasStrideBound = false;
     unsigned stride = 0;
     for (const Kernel * kernel : kernels) {
         for (const Attribute & attr : kernel->getAttributes()) {
@@ -290,8 +289,9 @@ Kernel * PipelineBuilder::makeKernel() {
 
     bool noFamilyKernels = true;
     for (unsigned i = 0; i < numOfKernels; ++i) {
-        const Kernel * const k = mKernels[i];
-        noFamilyKernels &= !k->hasFamilyName();
+        Kernel * const k = mKernels[i];
+        k->ensureLoaded();
+        if (k->hasFamilyName()) noFamilyKernels = false;
         enumerateConsumerBindings(VertexType::Scalar, firstKernel + i, k->getInputScalarBindings());
         enumerateConsumerBindings(VertexType::StreamSet, firstKernel + i, k->getInputStreamSetBindings());
     }

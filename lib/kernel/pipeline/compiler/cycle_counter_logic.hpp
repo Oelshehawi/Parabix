@@ -158,7 +158,7 @@ StreamSetPort PipelineCompiler::selectPrincipleCycleCountBinding(const unsigned 
 }
 
 /** ------------------------------------------------------------------------------------------------------------- *
- * @brief __print_pipeline_PAPI_report
+ * @brief __print_pipeline_cycle_counter_report
  ** ------------------------------------------------------------------------------------------------------------- */
 namespace {
 extern "C"
@@ -178,6 +178,8 @@ void __print_pipeline_cycle_counter_report(const unsigned numOfKernels,
     }
 
     const auto maxKernelIdLength = ((unsigned)std::ceil(std::log10(numOfKernels))) + 1U;
+
+    // TODO: cycle counter reporting oddly on colours=always?
 
     uint64_t totalCycleCount = 0;
     uint64_t maxItemCount = 0;
@@ -271,8 +273,7 @@ void __print_pipeline_cycle_counter_report(const unsigned numOfKernels,
             assert (k < REQ_INTEGERS);
             const auto v = values[k++];
             knownOverheads += v;
-            const long double cycles = v;
-            const double cycPerc = (cycles * 100.0L) / fSubTotal;
+            const double cycPerc = (((long double)v) * 100.0L) / fSubTotal;
             out << (boost::format("%5.1f") % cycPerc).str() << ' ';
         }
         assert (k < REQ_INTEGERS);
@@ -290,17 +291,13 @@ void __print_pipeline_cycle_counter_report(const unsigned numOfKernels,
         const auto perc = (fSubTotal * 100.0L) / fTotalCycleCount;
         out << (boost::format("%5.1f") % perc).str();
         assert (k < REQ_INTEGERS);
-        const long double sqrTotalCycles = values[k++];
+        const long double fSqrTotalCycles = values[k++];
         assert (k < REQ_INTEGERS);
         const uint64_t n = values[k++];
         const long double N = n;
-        const auto x = sqrTotalCycles / N;
-        const auto mean = fSubTotal / N;
-        const auto stddev = std::sqrt(x - (mean * mean));
-
-        out << (boost::format("   %10.4E") % mean).str();
-
-        out << (boost::format(" +- %10.4E\n") % stddev).str();
+        const auto x = std::max((fSqrTotalCycles * N) - (fSubTotal * fSubTotal), 0.0L);
+        const auto avgStddev = (std::sqrt(x) * 100.0L) / (N * fTotalCycleCount);
+        out << (boost::format(" +- %4.1f\n") % avgStddev).str();
 
     }
     assert (k == REQ_INTEGERS);
@@ -1206,11 +1203,12 @@ void PipelineCompiler::initializeStridesPerSegment(BuilderRef b) const {
 /** ------------------------------------------------------------------------------------------------------------- *
  * @brief recordStridesPerSegment
  ** ------------------------------------------------------------------------------------------------------------- */
-void PipelineCompiler::recordStridesPerSegment(BuilderRef b, const unsigned kernelId, Value * totalStrides) const {
+void PipelineCompiler::recordStridesPerSegment(BuilderRef b, const unsigned kernelId, Value * const totalStrides) const {
     if (LLVM_UNLIKELY(DebugOptionIsSet(codegen::TraceStridesPerSegment))) {
         // NOTE: this records only the change to attempt to reduce the memory usage of this log.
         assert (KernelPartitionId[kernelId - 1] != KernelPartitionId[kernelId]);
         const auto prefix = makeKernelName(kernelId);
+
         Value * const toUpdate = b->getScalarFieldPtr(prefix + STATISTICS_STRIDES_PER_SEGMENT_SUFFIX);
 
         Module * const m = b->getModule();
@@ -1276,7 +1274,19 @@ void PipelineCompiler::recordStridesPerSegment(BuilderRef b, const unsigned kern
             b->CreateStore(segNo, b->CreateGEP(traceLogPhi, {traceLength , ZERO}));
             b->CreateStore(numOfStrides, b->CreateGEP(traceLogPhi, {traceLength , ONE}));
             b->CreateStore(numOfStrides, lastNumOfStridesField);
-            b->CreateStore(b->CreateAdd(traceLength, b->getSize(1)), traceLengthField);
+            Value * const newTraceLength = b->CreateAdd(traceLength, b->getSize(1));
+            b->CreateStore(newTraceLength, traceLengthField);
+
+//            FixedArray<Value *, 6> argVals;
+//            argVals[0] = b->getInt32(STDERR_FILENO);
+//            argVals[1] = b->GetString("ptr %" PRIx64 "  traceLen: %" PRIu64 " numStrides: %" PRIu64 " segNo: %" PRIu64 "\n");
+//            argVals[2] = b->CreatePtrToInt(traceData, b->getInt64Ty());
+//            argVals[3] = traceLength;
+//            argVals[4] = numOfStrides;
+//            argVals[5] = segNo;
+//            Function * Dprintf = b->GetDprintf();
+//            b->CreateCall(Dprintf->getFunctionType(), Dprintf, argVals);
+
             b->CreateBr(exit);
 
             b->SetInsertPoint(exit);
@@ -1285,12 +1295,30 @@ void PipelineCompiler::recordStridesPerSegment(BuilderRef b, const unsigned kern
             b->restoreIP(ip);
         }
 
+
         FixedArray<Value *, 3> args;
         args[0] = toUpdate;
         args[1] = mSegNo;
         args[2] = totalStrides;
-
         b->CreateCall(updateSegmentsPerStrideTrace, args);
+
+    }
+}
+
+/** ------------------------------------------------------------------------------------------------------------- *
+ * @brief concludeStridesPerSegmentRecording
+ ** ------------------------------------------------------------------------------------------------------------- */
+void PipelineCompiler::concludeStridesPerSegmentRecording(BuilderRef b) const {
+    if (LLVM_UNLIKELY(DebugOptionIsSet(codegen::TraceStridesPerSegment))) {
+        auto currentPartitionId = KernelPartitionId[PipelineInput];
+        Constant * const sz_ZERO = b->getSize(0);
+        for (auto kernelId = FirstKernel; kernelId <= LastKernel; ++kernelId) {
+            const auto partitionId = KernelPartitionId[kernelId];
+            if (partitionId != currentPartitionId) {
+                currentPartitionId = partitionId;
+                recordStridesPerSegment(b, kernelId, sz_ZERO);
+            }
+        }
     }
 }
 
@@ -1392,8 +1420,6 @@ void PipelineCompiler::printOptionalStridesPerSegment(BuilderRef b) const {
             currentValue[i]->addIncoming(SZ_ZERO, loopEntry);
         }
 
-        Value * notDone = b->getFalse();
-
         for (unsigned i = 0; i < (PartitionCount - 2); ++i) {
             const auto prefix = makeKernelName(partitionRootIds[i]);
 
@@ -1402,7 +1428,6 @@ void PipelineCompiler::printOptionalStridesPerSegment(BuilderRef b) const {
             BasicBlock * const update = b->CreateBasicBlock();
             BasicBlock * const next = b->CreateBasicBlock();
             Value * const notEndOfTrace = b->CreateICmpNE(currentIndex[i], traceLengthArray[i]);
-            notDone = b->CreateOr(notDone, notEndOfTrace);
             b->CreateLikelyCondBr(notEndOfTrace, check, next);
 
             b->SetInsertPoint(check);
@@ -1438,10 +1463,13 @@ void PipelineCompiler::printOptionalStridesPerSegment(BuilderRef b) const {
         BasicBlock * const loopExit = b->CreateBasicBlock("reportStridesPerSegmentExit");
         BasicBlock * const loopEnd = b->GetInsertBlock();
         segNo->addIncoming(b->CreateAdd(segNo, SZ_ONE), loopEnd);
+
         for (unsigned i = 0; i < (PartitionCount - 2); ++i) {
             currentIndex[i]->addIncoming(updatedIndex[i], loopEnd);
             currentValue[i]->addIncoming(updatedValue[i], loopEnd);
         }
+
+        Value * const notDone = b->CreateICmpULT(segNo, mSegNo);
 
         b->CreateLikelyCondBr(notDone, loopStart, loopExit);
 
@@ -1510,7 +1538,7 @@ void PipelineCompiler::addUnconsumedItemCountProperties(BuilderRef b, unsigned k
 /** ------------------------------------------------------------------------------------------------------------- *
  * @brief recordStridesPerSegment
  ** ------------------------------------------------------------------------------------------------------------- */
-void PipelineCompiler::recordUnconsumedItemCounts(BuilderRef b) const {
+void PipelineCompiler::recordUnconsumedItemCounts(BuilderRef b) {
     if (LLVM_UNLIKELY(TraceUnconsumedItemCounts)) {
         const auto n = out_degree(mKernelId, mBufferGraph);
         if (LLVM_UNLIKELY(n == 0)) {
@@ -1522,7 +1550,7 @@ void PipelineCompiler::recordUnconsumedItemCounts(BuilderRef b) const {
             const StreamSetPort port(PortType::Output, i);
             const auto streamSet = getOutputBufferVertex(port);
             current[i] = mInitiallyProducedItemCount[streamSet];
-            prior[i] = mInitialConsumedItemCount[streamSet];
+            prior[i] = readConsumedItemCount(b, streamSet);
         }
         recordItemCountDeltas(b, current, prior, STATISTICS_UNCONSUMED_ITEM_COUNT_SUFFIX);
     }

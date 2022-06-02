@@ -493,10 +493,7 @@ RE * RE_Parser::parsePropertyExpression(PropertyExpression::Kind k) {
     if (atany("<>=:")) {
         // We have a property-name op value expression
         if (accept('=') || accept(':')) op = PropertyExpression::Operator::Eq;
-        else if (accept("<=")) op = PropertyExpression::Operator::LEq;
-        else if (accept(">=")) op = PropertyExpression::Operator::GEq;
-        else if (accept('<')) op = PropertyExpression::Operator::Less;
-        else if (accept('>')) op = PropertyExpression::Operator::Greater;
+        else if (accept("!=")) op = PropertyExpression::Operator::NEq;
         while (accept(' ') || accept('\t')) {/* skip whitespace, do nothing */}
         auto val_start = mCursor.pos();
         if (accept('/')) {
@@ -781,7 +778,7 @@ Name * RE_Parser::createName(std::string value) {
     if (f != mNameMap.end()) {
         return f->second;
     }
-    Name * const property = makeName(value, Name::Type::UnicodeProperty);
+    Name * const property = makeName(value);
     mNameMap.insert(std::make_pair(std::move(key), property));
     return property;
     }
@@ -792,7 +789,7 @@ Name * RE_Parser::createName(std::string prop, std::string value) {
     if (f != mNameMap.end()) {
         return f->second;
     }
-    Name * const property = makeName(prop, value, Name::Type::UnicodeProperty);
+    Name * const property = makeName(prop, value);
     mNameMap.insert(std::make_pair(std::move(key), property));
     return property;
 }

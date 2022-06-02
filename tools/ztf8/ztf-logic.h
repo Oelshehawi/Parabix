@@ -31,7 +31,6 @@ public:
 public:
     unsigned getLengthGroupNo(unsigned lgth) const;
     unsigned maxSymbolLength() const;
-    unsigned minSymbolLength() const;
     unsigned maxEncodingBytes() const;
     unsigned prefixLengthOffset(unsigned lgth) const;
     unsigned prefixLengthMaskBits(unsigned lgth, unsigned numSym) const;
@@ -197,13 +196,11 @@ public:
                     unsigned groupNo,
                  StreamSet * symbolRun, StreamSet * const lengthBixNum,
                  StreamSet * overflow,
-                 StreamSet * selected,
-                 unsigned offset = 2);
+                 StreamSet * selected);
 protected:
     void generatePabloMethod() override;
     EncodingInfo & mEncodingScheme;
     unsigned mGroupNo;
-    unsigned mOffset;
 };
 
 class LengthSorter final: public pablo::PabloKernel {

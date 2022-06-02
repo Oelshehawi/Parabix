@@ -4,6 +4,7 @@
 #include "graphs.h"
 #include <boost/iterator/iterator_facade.hpp>
 #include <random>
+#include "../analysis/xoroshiro128.hpp"
 
 namespace kernel {
 
@@ -18,9 +19,9 @@ using namespace boost;
 template <typename T, unsigned n = 16>
 using Vec = SmallVector<T, n>;
 
-using Allocator = SlabAllocator<>;
+using SimulationAllocator = SlabAllocator<>;
 
-using random_engine = std::default_random_engine; // TODO: look into xorshift for this
+using pipeline_random_engine = std::default_random_engine;
 
 // Many of the topological orderings of the graphs are simply
 // a reverse traversal through the nodes of the graph.
@@ -123,7 +124,7 @@ private:
 
 template <typename T>
 struct FixedVector {
-    FixedVector(const size_t First, const size_t Last, Allocator & A)
+    FixedVector(const size_t First, const size_t Last, SimulationAllocator & A)
     : mArray(A.allocate<T>(Last - First + 1U) - First)
     #ifndef NDEBUG
     , mFirst(First)
@@ -133,7 +134,7 @@ struct FixedVector {
         reset(First, Last);
     }
 
-    FixedVector(const size_t Size, Allocator & A)
+    FixedVector(const size_t Size, SimulationAllocator & A)
     : mArray(A.allocate<T>(Size))
     #ifndef NDEBUG
     , mFirst(0)
@@ -220,7 +221,7 @@ struct StreamSetOutputPort {
 
 template <typename T>
 struct InputPortVector {
-    inline InputPortVector(const size_t n, Allocator & A)
+    inline InputPortVector(const size_t n, SimulationAllocator & A)
     : mArray(0, n, A) {
     }
     inline T operator[](const StreamSetPort port) const {
@@ -246,7 +247,7 @@ private:
 
 template <typename T>
 struct OutputPortVector {
-    inline OutputPortVector(const size_t n, Allocator & A)
+    inline OutputPortVector(const size_t n, SimulationAllocator & A)
     : mArray(0, n, A) {
     }
     inline T operator[](const StreamSetPort port) const {
@@ -332,6 +333,7 @@ public:
 
     LLVM_READNONE bool mayHaveNonLinearIO(const size_t kernel) const;
 
+    LLVM_READNONE bool isKernelStateFree(const size_t kernel) const;
 
 private:
 
@@ -662,6 +664,99 @@ bool PipelineCommonGraphFunctions::mayHaveNonLinearIO(const size_t kernel) const
         }
     }
     return false;
+}
+
+/** ------------------------------------------------------------------------------------------------------------- *
+ * @brief isKernelStateFree
+ ** ------------------------------------------------------------------------------------------------------------- */
+bool PipelineCommonGraphFunctions::isKernelStateFree(const size_t kernel) const {
+#ifdef DISABLE_ALL_DATA_PARALLEL_SYNCHRONIZATION
+    return false;
+#else
+    const Kernel * const kernelObj = getKernel(kernel);
+
+    assert (kernelObj->isGenerated());
+
+    bool isExplicitlyMarkedAsStateFree = false;
+    bool hasOverridableAttribute = false;
+    bool hasForbiddenAttribute = false;
+
+    for (const Attribute & attr : kernelObj->getAttributes()) {
+        switch (attr.getKind()) {
+            case AttrId::MayFatallyTerminate:
+            case AttrId::CanTerminateEarly:
+            case AttrId::MustExplicitlyTerminate:
+            case AttrId::InternallySynchronized:
+                hasForbiddenAttribute = true;
+                break;
+            case AttrId::SideEffecting:
+                hasOverridableAttribute = true;
+                break;
+            case AttrId::Statefree:
+                isExplicitlyMarkedAsStateFree = true;
+                break;
+            default: break;
+        }
+    }
+
+    if (hasForbiddenAttribute || kernelObj->hasFamilyName()) {
+        return false;
+    }
+
+    for (const auto e : make_iterator_range(in_edges(kernel, mBufferGraphRef))) {
+        const BufferPort & p = mBufferGraphRef[e];
+        const Binding & b = p.Binding;
+        const ProcessingRate & r = b.getRate();
+        switch (r.getKind()) {
+            case ProcessingRate::KindId::Fixed:
+            case ProcessingRate::KindId::PartialSum:
+            case ProcessingRate::KindId::Greedy:
+                break;
+            default:
+                return false;
+        }
+
+        if (p.IsDeferred) {
+            return false;
+        }
+    }
+
+    for (const auto e : make_iterator_range(out_edges(kernel, mBufferGraphRef))) {
+        const BufferPort & p = mBufferGraphRef[e];
+        const Binding & b = p.Binding;
+        const ProcessingRate & r = b.getRate();
+
+        switch (r.getKind()) {
+            case ProcessingRate::KindId::Fixed:
+                break;
+            case ProcessingRate::KindId::PartialSum:
+                // We permit a partial sum output rate if and only if the kernel
+                // was explicitly marked as statefree. Otherwise we cannot ensure
+                // that the portion of a buffer that demarcates two invocations
+                // will be correctly merged.
+                if (isExplicitlyMarkedAsStateFree) break;
+            default:
+                return false;
+        }
+
+        if (p.IsDeferred || p.LookBehind) {
+            return false;
+        }
+    }
+    if (LLVM_UNLIKELY(isExplicitlyMarkedAsStateFree)) {
+        return true;
+    }
+    if (LLVM_UNLIKELY(hasOverridableAttribute)) {
+        return false;
+    }
+    StructType * const st = kernelObj->getSharedStateType();
+    if (st == nullptr) {
+        assert (kernelObj->getNumOfScalarInputs() == 0);
+        return true;
+    }
+    assert (st->getStructNumElements() >= kernelObj->getNumOfScalarInputs());
+    return st->getStructNumElements() == kernelObj->getNumOfScalarInputs();
+#endif
 }
 
 }

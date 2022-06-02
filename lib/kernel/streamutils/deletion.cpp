@@ -15,6 +15,7 @@
 #include <kernel/pipeline/driver/driver.h>
 #include <kernel/pipeline/driver/cpudriver.h>
 
+
 using namespace llvm;
 
 inline size_t ceil_udiv(const size_t n, const size_t m) {
@@ -24,6 +25,7 @@ inline size_t ceil_udiv(const size_t n, const size_t m) {
 namespace kernel {
 
 using BuilderRef = Kernel::BuilderRef;
+
 
 void FilterByMask(const std::unique_ptr<ProgramBuilder> & P,
                   StreamSet * mask, StreamSet * inputs, StreamSet * outputs,
@@ -287,9 +289,9 @@ StreamCompressKernel::StreamCompressKernel(BuilderRef b
                                            , StreamSet * compressedOutput
                                            , const unsigned FieldWidth)
 : MultiBlockKernel(b, "streamCompress" + std::to_string(FieldWidth) + "_" + std::to_string(source->getNumElements()),
-{Binding{"extractionMask", extractionMask, FixedRate(), Principal()},
-    Binding{"sourceStreamSet", source, FixedRate(), ZeroExtended()}},
-{Binding{"compressedOutput", compressedOutput, PopcountOf("extractionMask"), EmptyWriteOverflow()}},
+{Bind("extractionMask", extractionMask, Principal()),
+ Bind("sourceStreamSet", source, ZeroExtended())},
+{Bind("compressedOutput", compressedOutput, PopcountOf("extractionMask"), EmptyWriteOverflow(), MaximumDistribution())},
 {}, {}, {})
 , mFW(FieldWidth)
 , mStreamCount(source->getNumElements()) {
@@ -1247,11 +1249,13 @@ void SwizzledBitstreamCompressByCount::generateFinalBlockMethod(BuilderRef kb, V
 }
 
 const unsigned MIN_STREAMS_TO_SWIZZLE = 4;
+
 FilterByMaskKernel::FilterByMaskKernel(BuilderRef b,
                                          SelectOperation const & maskOp,
                                          SelectOperationList const & inputOps,
                                          StreamSet * filteredOutput,
-                                         unsigned fieldWidth)
+                                         unsigned fieldWidth,
+                                         ProcessingRateProbabilityDistribution insertionProbabilityDistribution)
 : MultiBlockKernel(b, "FilterByMask" + std::to_string(fieldWidth) + "_" +
                    streamutils::genSignature(maskOp) +
                    ":" + streamutils::genSignature(inputOps),
@@ -1262,18 +1266,19 @@ FilterByMaskKernel::FilterByMaskKernel(BuilderRef b,
     mMaskOp.operation = maskOp.operation;
     mMaskOp.bindings.push_back(std::make_pair("extractionMask", maskOp.bindings[0].second));
     // assert (streamutil::resultStreamCount(maskOp) == 1);
-    mInputStreamSets.push_back({"extractionMask", maskOp.bindings[0].first, FixedRate(), Principal()});
+    mInputStreamSets.push_back(Bind("extractionMask", maskOp.bindings[0].first, Principal()));
     //assert (streamutil::resultStreamCount(inputOps) == filteredOutput->getNumElements());
     std::unordered_map<StreamSet *, std::string> inputBindings;
     std::tie(mInputOps, inputBindings) = streamutils::mapOperationsToStreamNames(inputOps);
     for (auto const & kv : inputBindings) {
-        mInputStreamSets.push_back({kv.second, kv.first, FixedRate(), ZeroExtended()});
+        mInputStreamSets.push_back(Bind(kv.second, kv.first, ZeroExtended()));
     }
-    mOutputStreamSets.push_back({"filteredOutput", filteredOutput, PopcountOf("extractionMask")});
+    mOutputStreamSets.push_back(Bind("filteredOutput", filteredOutput, PopcountOf("extractionMask"), insertionProbabilityDistribution));
+    assert (mOutputStreamSets.back().getDistribution().getTypeId() == insertionProbabilityDistribution.getTypeId());
     Type * pendingType;
     if (mStreamCount >= MIN_STREAMS_TO_SWIZZLE) {
         pendingType = b->getBitBlockType();
-        mPendingSetCount = (mStreamCount + mFieldsPerBlock - 1)/mFieldsPerBlock;;
+        mPendingSetCount = (mStreamCount + mFieldsPerBlock - 1)/mFieldsPerBlock;
     } else {
         pendingType = b->getIntNTy(mFW);
         mPendingSetCount = mStreamCount;

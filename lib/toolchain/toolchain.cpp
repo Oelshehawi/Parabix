@@ -42,7 +42,9 @@ DebugOptions(cl::desc("Debugging Options"), cl::values(clEnumVal(VerifyIR, "Run 
                         clEnumVal(TraceStridesPerSegment, "Trace number of strides executed over segments."),
                         clEnumVal(TraceProducedItemCounts, "Trace produced item count deltas over segments."),
                         clEnumVal(TraceUnconsumedItemCounts, "Trace unconsumed item counts over segments."),
-                        clEnumVal(EnableAsserts, "Enable built-in Parabix framework asserts in generated IR."),
+
+                        clEnumVal(EnableAsserts, "Enable built-in Parabix framework asserts in all generated IR."),
+                        clEnumVal(EnablePipelineAsserts, "Enable built-in Parabix framework asserts in generated pipeline IR."),
                         clEnumVal(EnableMProtect, "Use mprotect to cause a write fault when erroneously "
                                                   "overwriting kernel state / stream space."),
                         clEnumVal(EnableCycleCounter, "Count and report CPU cycles per kernel."),
@@ -56,9 +58,14 @@ DebugOptions(cl::desc("Debugging Options"), cl::values(clEnumVal(VerifyIR, "Run 
                         clEnumVal(DisplayPAPICounterThreadTotalsOnly, "Disable per-kernel PAPI counters when given a valid PapiCounters list."),
                         #endif
 
+                        clEnumVal(DisableCacheAlignedKernelStructs, "Disable cache alignment of kernel state memory."),
+
                         clEnumVal(PrintKernelSizes, "Write kernel state object size in bytes to stderr."),
-                        clEnumVal(PrintPipelineGraph, "Write PipelineKernel graph in dot file format to stderr.")
+                        clEnumVal(PrintPipelineGraph, "Write PipelineKernel graph in dot file format to stderr."),
+                        clEnumVal(ForcePipelineRecompilation, "Disable object cache lookup for any PipelineKernel.")
                         CL_ENUM_VAL_SENTINEL), cl::cat(CodeGenOptions));
+
+
 
 
 std::string ShowIROption = OmittedOption;
@@ -209,7 +216,8 @@ unsigned SegmentThreads;
 
 unsigned ScanBlocks;
 
-bool EnableObjectCache;
+bool EnableObjectCache = true;
+bool EnablePipelineObjectCache = true;
 bool TraceObjectCache;
 
 unsigned CacheDaysLimit;
@@ -241,9 +249,6 @@ bool LLVM_READONLY AnyDebugOptionIsSet() {
 std::string ProgramName;
 
 inline bool disableObjectCacheDueToCommandLineOptions() {
-    #ifdef DISABLE_OBJECT_CACHE
-    return true;
-    #else
     if (!TraceOption.empty()) return true;
     if (DebugOptions.isSet(PrintKernelSizes)) return true;
     if (DebugOptions.isSet(PrintPipelineGraph)) return true;
@@ -255,8 +260,16 @@ inline bool disableObjectCacheDueToCommandLineOptions() {
     if (pablo::ShowPabloOption != OmittedOption) return true;
     if (pablo::ShowOptimizedPabloOption != OmittedOption) return true;
     return false;
-    #endif
 }
+
+inline bool disablePipelineObjectCacheDueToCommandLineOptions() {
+    if (DebugOptions.isSet(PrintPipelineGraph)) return true;
+    if (DebugOptions.isSet(EnablePipelineAsserts)) return true;
+    if (DebugOptions.isSet(DisableThreadLocalStreamSets)) return true;
+    if (DebugOptions.isSet(ForcePipelineRecompilation)) return true;
+    return false;
+}
+
 
 void ParseCommandLineOptions(int argc, const char * const *argv, std::initializer_list<const cl::OptionCategory *> hiding) {
     AddParabixVersionPrinter();
@@ -270,6 +283,8 @@ void ParseCommandLineOptions(int argc, const char * const *argv, std::initialize
     cl::ParseCommandLineOptions(argc, argv);
     if (disableObjectCacheDueToCommandLineOptions()) {
         EnableObjectCache = false;
+    } else if (disablePipelineObjectCacheDueToCommandLineOptions()) {
+        EnablePipelineObjectCache = false;
     }
     ObjectCacheDir = ObjectCacheDirOption.empty() ? nullptr : ObjectCacheDirOption.data();
 #if LLVM_VERSION_INTEGER >= LLVM_VERSION_CODE(3, 7, 0)

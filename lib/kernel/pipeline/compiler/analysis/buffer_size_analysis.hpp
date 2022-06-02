@@ -135,7 +135,7 @@ struct BufferLayoutOptimizer final : public PermutationBasedEvolutionaryAlgorith
     BufferLayoutOptimizer(const unsigned numOfLocalStreamSets
                          , IntervalGraph && I, IntervalGraph && C
                          , const std::vector<unsigned> & weight
-                         , random_engine & srcRng)
+                         , pipeline_random_engine & srcRng)
     : PermutationBasedEvolutionaryAlgorithm (numOfLocalStreamSets,
                                              BUFFER_SIZE_GA_ROUNDS, BUFFER_SIZE_GA_STALLS, BUFFER_SIZE_POPULATION_SIZE, srcRng)
     , I(std::move(I))
@@ -170,7 +170,7 @@ private:
  * Because the Intel L2 streamer prefetcher has one forward and one reverse monitor per page, a streamset will
  * only be placed in a page in which no other streamset accesses it during the same kernel invocation.
  ** ------------------------------------------------------------------------------------------------------------- */
-void PipelineAnalysis::determineBufferLayout(BuilderRef b, random_engine & rng) {
+void PipelineAnalysis::determineBufferLayout(BuilderRef b, pipeline_random_engine & rng) {
 
     // Construct the weighted interval graph for our local streamsets
 
@@ -218,7 +218,6 @@ void PipelineAnalysis::determineBufferLayout(BuilderRef b, random_engine & rng) 
                     #endif
                     assert (typeSize > 0);
                     const auto c = bn.UnderflowCapacity + bn.RequiredCapacity + bn.OverflowCapacity;
-
                     assert (c > 0);
                     const auto w = c * typeSize;
                     assert (w > 0);
@@ -227,7 +226,7 @@ void PipelineAnalysis::determineBufferLayout(BuilderRef b, random_engine & rng) 
                     const auto j = count++;
                     assert (mapping[i] == -1U);
                     mapping[i] = j;
-                    weight[j] = w * THREAD_LOCAL_BUFFER_OVERSIZE_FACTOR;
+                    weight[j] = w;
                 }
             }
         }
@@ -239,8 +238,6 @@ void PipelineAnalysis::determineBufferLayout(BuilderRef b, random_engine & rng) 
         IntervalGraph I(count); // live memory interval graph
 
         for (auto kernel = firstKernel, m = 0U; kernel <= lastKernel; ++kernel) {
-
-
 
             for (const auto output : make_iterator_range(out_edges(kernel, mBufferGraph))) {
                 const auto streamSet = target(output, mBufferGraph);
@@ -291,6 +288,14 @@ void PipelineAnalysis::determineBufferLayout(BuilderRef b, random_engine & rng) 
 
         IntervalGraph C(count); // co-used interval graph
 
+        #ifdef PREVENT_THREAD_LOCAL_BUFFERS_FROM_SHARING_MEMORY
+        for (unsigned i = 1; i < count; ++i) {
+            for (unsigned j = 0; j < i; ++j) {
+                add_edge(j, i, C);
+            }
+        }
+        #else
+
         flat_set<unsigned> coused;
 
         for (auto kernel = firstKernel; kernel <= lastKernel; ++kernel) {
@@ -333,6 +338,7 @@ void PipelineAnalysis::determineBufferLayout(BuilderRef b, random_engine & rng) 
             }
             coused.clear();
         }
+        #endif
 
         BufferLayoutOptimizer BA(count, std::move(I), std::move(C), weight, rng);
         BA.runGA();

@@ -1,10 +1,6 @@
 #ifndef PIPELINE_KERNEL_ANALYSIS_HPP
 #define PIPELINE_KERNEL_ANALYSIS_HPP
 
-#include "../config.h"
-#include "../common/common.hpp"
-#include "../common/graphs.h"
-
 #include <algorithm>
 #include <queue>
 #include <z3.h>
@@ -16,33 +12,24 @@
 #include <kernel/core/kernel_builder.h>
 
 #include <llvm/Support/Format.h>
-
-// #define PRINT_STAGES
-
-#include <boost/graph/connected_components.hpp>
-#include <boost/graph/dominator_tree.hpp>
-
-
+#include "../pipeline_compiler.hpp"
 
 namespace kernel {
 
 struct PipelineAnalysis : public PipelineCommonGraphFunctions {
 
-public:
-
+    using KernelPartitionIds = flat_map<ProgramGraph::vertex_descriptor, unsigned>;
 
     static PipelineAnalysis analyze(BuilderRef b, PipelineKernel * const pipelineKernel) {
 
         PipelineAnalysis P(pipelineKernel);
 
-        // TODO:: address FIXED PIPELINE COMPILATION SEED
+//        std::random_device rd;
+//        xoroshiro128 rng(rd);
 
-        const auto seed = 2081280305; // std::random_device{}();
+        pipeline_random_engine rng;
 
-        random_engine rng(seed);
-
-//        const auto graphSeed = 2081280305; //rng(); // 2081280305, 2081280305
-
+//        const auto graphSeed = 2081280305;
 //        P.generateRandomPipelineGraph(b, graphSeed, 50, 70, 10);
 
         P.generateInitialPipelineGraph(b);
@@ -50,8 +37,11 @@ public:
 
         // Initially, we gather information about our partition to determine what kernels
         // are within each partition in a topological order
-        auto partitionGraph = P.identifyKernelPartitions();
-        P.computeMinimumExpectedDataflow(partitionGraph);
+        auto initialGraph = P.initialPartitioningPass();
+        P.computeIntraPartitionRepetitionVectors(initialGraph);
+        P.estimateInterPartitionDataflow(initialGraph, rng);
+        auto partitionGraph = P.postDataflowAnalysisPartitioningPass(initialGraph);
+
         P.schedulePartitionedProgram(partitionGraph, rng);
         // Construct the Stream and Scalar graphs
         P.transcribeRelationshipGraph(partitionGraph);
@@ -61,10 +51,6 @@ public:
         P.identifyKernelsOnHybridThread();
 
         P.identifyOutputNodeIds();
-
-        P.computeMaximumDataflow(false);
-
-        P.computeMinimumStrideLengthForConsistentDataflow();
 
         P.identifyInterPartitionSymbolicRates();
 
@@ -123,8 +109,6 @@ private:
 
     // pipeline analysis functions
 
-    using KernelPartitionIds = flat_map<ProgramGraph::vertex_descriptor, unsigned>;
-
     void generateInitialPipelineGraph(BuilderRef b);
 
     #ifdef ENABLE_GRAPH_TESTING_FUNCTIONS
@@ -161,6 +145,8 @@ private:
 
 
     // partitioning analysis
+    PartitionGraph initialPartitioningPass();
+    PartitionGraph postDataflowAnalysisPartitioningPass(PartitionGraph & initial);
 
     PartitionGraph identifyKernelPartitions();
 
@@ -170,15 +156,15 @@ private:
 
     // scheduling analysis
 
-    void schedulePartitionedProgram(PartitionGraph & P, random_engine & rng);
+    void schedulePartitionedProgram(PartitionGraph & P, pipeline_random_engine & rng);
 
-    void analyzeDataflowWithinPartitions(PartitionGraph & P, random_engine & rng) const;
+    void analyzeDataflowWithinPartitions(PartitionGraph & P, pipeline_random_engine & rng) const;
 
     SchedulingGraph makeIntraPartitionSchedulingGraph(const PartitionGraph & P, const unsigned currentPartitionId) const;
 
     PartitionDependencyGraph makePartitionDependencyGraph(const unsigned numOfKernels, const SchedulingGraph & S) const;
 
-    OrderingDAWG scheduleProgramGraph(const PartitionGraph & P, random_engine & rng) const;
+    OrderingDAWG scheduleProgramGraph(const PartitionGraph & P, pipeline_random_engine & rng) const;
 
     OrderingDAWG assembleFullSchedule(const PartitionGraph & P, const OrderingDAWG & partial) const;
 
@@ -195,7 +181,7 @@ private:
 
     void determineBufferSize(BuilderRef b);
 
-    void determineBufferLayout(BuilderRef b, random_engine & rng);
+    void determineBufferLayout(BuilderRef b, pipeline_random_engine & rng);
 
     void identifyOwnedBuffers();
 
@@ -214,16 +200,12 @@ private:
     void makeConsumerGraph();
 
     // dataflow analysis functions
+    void computeIntraPartitionRepetitionVectors(PartitionGraph & P);
+    void estimateInterPartitionDataflow(PartitionGraph & P, pipeline_random_engine & rng);
 
     void computeMinimumExpectedDataflow(PartitionGraph & P);
 
-    void recomputeMinimumExpectedDataflow();
-
-    void computeMaximumDataflow(const bool expected);
-
     void identifyInterPartitionSymbolicRates();
-
-    void computeMinimumStrideLengthForConsistentDataflow();
 
     void calculatePartialSumStepFactors();
 
@@ -297,7 +279,6 @@ public:
     KernelIdVector                  KernelPartitionId;
 
     std::vector<unsigned>           MinimumNumOfStrides;
-    std::vector<unsigned>           ExpectedNumOfStrides;
     std::vector<unsigned>           MaximumNumOfStrides;
     std::vector<unsigned>           StrideStepLength;
 
@@ -329,6 +310,7 @@ public:
 #include "buffer_size_analysis.hpp"
 #include "consumer_analysis.hpp"
 #include "dataflow_analysis.hpp"
+#include "variable_rate_analysis.hpp"
 #include "partitioning_analysis.hpp"
 #include "scheduling_analysis.hpp"
 #include "termination_analysis.hpp"

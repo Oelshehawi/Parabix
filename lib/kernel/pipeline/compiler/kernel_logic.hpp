@@ -21,7 +21,7 @@ void PipelineCompiler::setActiveKernel(BuilderRef b, const unsigned kernelId, co
     }
     mKernelThreadLocalHandle = nullptr;
     if (mKernel->hasThreadLocal() && allowThreadLocal) {
-        mKernelThreadLocalHandle = b->CreateLoad(getThreadLocalHandlePtr(b, mKernelId));
+        mKernelThreadLocalHandle = getThreadLocalHandlePtr(b, mKernelId);
     }
     mCurrentKernelName = mKernelName[mKernelId];
 }
@@ -42,7 +42,7 @@ void PipelineCompiler::computeFullyProcessedItemCounts(BuilderRef b, Value * con
         const Binding & input = br.Binding;
         Value * const fullyProcessed = truncateBlockSize(b, input, processed, terminated);
         mFullyProcessedItemCount[port] = fullyProcessed;
-        if (CheckAssertions) {
+        if (LLVM_UNLIKELY(CheckAssertions)) {
             const auto streamSet = source(e, mBufferGraph);
             const auto producer = parent(streamSet, mBufferGraph);
             if (mCurrentPartitionId == KernelPartitionId[producer]) {
@@ -55,11 +55,18 @@ void PipelineCompiler::computeFullyProcessedItemCounts(BuilderRef b, Value * con
                 Value * const valid = b->CreateOr(fullyConsumed, fatalError);
                 Constant * const bindingName = b->GetString(input.getName());
 
+                Constant * withOrWithout = nullptr;
+                if (mMayLoopToEntry) {
+                    withOrWithout = b->GetString("with");
+                } else {
+                    withOrWithout = b->GetString("without");
+                }
+
                 b->CreateAssert(valid,
                                 "%s.%s: local available item count (%" PRId64 ") does not match "
-                                "its processed item count (%" PRId64 ")",
+                                "its processed item count (%" PRId64 ") in kernel %s loop back support",
                                 mCurrentKernelName, bindingName,
-                                produced, processed);
+                                produced, processed, withOrWithout);
             }
         }
     }
@@ -165,9 +172,10 @@ Value * PipelineCompiler::getThreadLocalHandlePtr(BuilderRef b, const unsigned k
     const auto prefix = makeKernelName(kernelIndex);
     Value * handle = getScalarFieldPtr(b.get(), prefix + KERNEL_THREAD_LOCAL_SUFFIX);
     if (LLVM_UNLIKELY(kernel->externallyInitialized())) {
-        PointerType * const localStateTy = kernel->getThreadLocalStateType()->getPointerTo();
-        handle = b->CreatePointerCast(handle, localStateTy->getPointerTo());
+        StructType * const localStateTy = kernel->getThreadLocalStateType();
+        handle = b->CreatePointerCast(b->CreateLoad(handle), localStateTy->getPointerTo());
     }
+    assert (handle->getType()->isPointerTy());
     return handle;
 }
 
@@ -240,38 +248,6 @@ bool PipelineCompiler::requiresExplicitFinalStride() const {
     return false;
 }
 
-
-/** ------------------------------------------------------------------------------------------------------------- *
- * @brief mayLoopBackToEntry
- ** ------------------------------------------------------------------------------------------------------------- */
-bool PipelineCompiler::mayLoopBackToEntry() const {
-    assert (mKernelId >= FirstKernel && mKernelId <= LastKernel);
-    for (const auto e : make_iterator_range(in_edges(mKernelId, mBufferGraph))) {
-        const auto streamSet = source(e, mBufferGraph);
-        const BufferNode & bn = mBufferGraph[streamSet];
-        if (bn.IsLinear) continue;
-        const BufferPort & br = mBufferGraph[e];
-        const Binding & binding = br.Binding;
-        const ProcessingRate & rate = binding.getRate();
-
-        // If the greedy rate does not have a positive lower bound,
-        // we cannot test whether we're finished.
-
-        // NOTE: having a greedy rate requires that all I/O for this
-        // kernel is linear. Thus this case should be reported as an
-        // error but is left with the check for now.
-
-        if (LLVM_UNLIKELY(rate.isGreedy())) {
-            if (rate.getLowerBound() == Rational{0, 1}) {
-                continue;
-            }
-        }
-
-        return true;
-    }
-    return false;
-}
-
 /** ------------------------------------------------------------------------------------------------------------- *
  * @brief identifyPipelineInputs
  ** ------------------------------------------------------------------------------------------------------------- */
@@ -320,100 +296,67 @@ bool PipelineCompiler::hasAtLeastOneNonGreedyInput() const {
     return false;
 }
 
-#if 0
 /** ------------------------------------------------------------------------------------------------------------- *
- * @brief identifyPipelineInputs
+ * @brief isDataParallel
  ** ------------------------------------------------------------------------------------------------------------- */
-void PipelineCompiler::identifyLocalPortIds(const unsigned kernelId) {
-
-    // Although this function simply just counts the number of local I/O ids,
-    // it does perform a sanity test in debug mode. If any of these assertions
-    // were to trigger, there is likely a serious problem in the analysis for
-    // any to occur. Verify how local port ids are being assigned and update the
-    // assertions only after proving its correct.
-
-    #ifndef NDEBUG
-    const auto numOfInputs = in_degree(kernelId, mBufferGraph);
-    BitVector inputs(numOfInputs + 1U);
-    #endif
-    mNumOfLocalInputPortIds = 0;
-    for (const auto e : make_iterator_range(in_edges(kernelId, mBufferGraph))) {
-        const BufferPort & br = mBufferGraph[e];
-        const auto id = br.LocalPortId;
-        #ifndef NDEBUG
-        assert ("local port id exceeded num of input ports?" && (id < numOfInputs));
-        inputs.set(id);
-        #endif
-        mNumOfLocalInputPortIds = std::max(mNumOfLocalInputPortIds, id);
-    }
-    assert ("gap in local input port ids?" && (static_cast<int>(inputs.count()) == inputs.find_first_unset()));
-
-    #ifndef NDEBUG
-    const auto numOfOutputs = out_degree(kernelId, mBufferGraph);
-    BitVector outputs(numOfOutputs + 1U);
-    #endif
-    mNumOfLocalOutputPortIds = 0;
-    for (const auto e : make_iterator_range(out_edges(kernelId, mBufferGraph))) {
-        const BufferPort & br = mBufferGraph[e];
-        const auto id = br.LocalPortId;
-        #ifndef NDEBUG
-        assert ("local port id exceeded num of output ports?" && (id < numOfOutputs));
-        outputs.set(id);
-        #endif
-        mNumOfLocalOutputPortIds = std::max(mNumOfLocalOutputPortIds, id);
-    }
-    assert ("gap in local output port ids?" && (static_cast<int>(outputs.count()) == outputs.find_first_unset()));
-
+bool PipelineCompiler::isDataParallel(const size_t kernel) const {
+    return mIsStatelessKernel.test(kernel) || mIsInternallySynchronized.test(kernel);
 }
-#endif
+
+/** ------------------------------------------------------------------------------------------------------------- *
+ * @brief isCurrentKernelStateFree
+ ** ------------------------------------------------------------------------------------------------------------- */
+inline bool PipelineCompiler::isCurrentKernelStateFree() const {
+    return PipelineCommonGraphFunctions::isKernelStateFree(mKernelId);
+}
 
 /** ------------------------------------------------------------------------------------------------------------- *
  * @brief getInputBufferVertex
  ** ------------------------------------------------------------------------------------------------------------- */
 inline unsigned PipelineCompiler::getInputBufferVertex(const StreamSetPort inputPort) const {
-    return getInputBufferVertex(mKernelId, inputPort);
+    return PipelineCommonGraphFunctions::getInputBufferVertex(mKernelId, inputPort);
 }
 
 /** ------------------------------------------------------------------------------------------------------------- *
  * @brief getInputBuffer
  ** ------------------------------------------------------------------------------------------------------------- */
 inline StreamSetBuffer * PipelineCompiler::getInputBuffer(const StreamSetPort inputPort) const {
-    return getInputBuffer(mKernelId, inputPort);
+    return PipelineCommonGraphFunctions::getInputBuffer(mKernelId, inputPort);
 }
 
 /** ------------------------------------------------------------------------------------------------------------- *
  * @brief getInputBinding
  ** ------------------------------------------------------------------------------------------------------------- */
 inline const Binding & PipelineCompiler::getInputBinding(const StreamSetPort inputPort) const {
-    return getInputBinding(mKernelId, inputPort);
+    return PipelineCommonGraphFunctions::getInputBinding(mKernelId, inputPort);
 }
 
 /** ------------------------------------------------------------------------------------------------------------- *
  * @brief getOutputBufferVertex
  ** ------------------------------------------------------------------------------------------------------------- */
 inline unsigned PipelineCompiler::getOutputBufferVertex(const StreamSetPort outputPort) const {
-    return getOutputBufferVertex(mKernelId, outputPort);
+    return PipelineCommonGraphFunctions::getOutputBufferVertex(mKernelId, outputPort);
 }
 
 /** ------------------------------------------------------------------------------------------------------------- *
  * @brief getOutputBinding
  ** ------------------------------------------------------------------------------------------------------------- */
 inline const Binding & PipelineCompiler::getOutputBinding(const StreamSetPort outputPort) const {
-    return getOutputBinding(mKernelId, outputPort);
+    return PipelineCommonGraphFunctions::getOutputBinding(mKernelId, outputPort);
 }
 
 /** ------------------------------------------------------------------------------------------------------------- *
  * @brief getOutputBuffer
  ** ------------------------------------------------------------------------------------------------------------- */
 inline StreamSetBuffer * PipelineCompiler::getOutputBuffer(const StreamSetPort outputPort) const {
-    return getOutputBuffer(mKernelId, outputPort);
+    return PipelineCommonGraphFunctions::getOutputBuffer(mKernelId, outputPort);
 }
 
 /** ------------------------------------------------------------------------------------------------------------- *
  * @brief getBinding
  ** ------------------------------------------------------------------------------------------------------------- */
 inline const Binding & PipelineCompiler::getBinding(const StreamSetPort port) const {
-    return getBinding(mKernelId, port);
+    return PipelineCommonGraphFunctions::getBinding(mKernelId, port);
 }
 
 /** ------------------------------------------------------------------------------------------------------------- *
@@ -440,6 +383,11 @@ void PipelineCompiler::clearInternalStateForCurrentKernel() {
     mNumOfVirtualBaseAddresses = 0;
     mNumOfTruncatedInputBuffers = 0;
 
+    mExecuteStridesIndividually = false;
+    mCurrentKernelIsStateFree = false;
+    mAllowDataParallelExecution = false;
+
+    mHasMoreInput = nullptr;
     mHasZeroExtendedInput = nullptr;
     mExhaustedPipelineInputPhi = nullptr;
     mExhaustedInputAtJumpPhi = nullptr;
@@ -481,6 +429,7 @@ void PipelineCompiler::clearInternalStateForCurrentKernel() {
     mProcessedDeferredItemCount.reset(numOfInputs);
     mUpdatedProcessedPhi.reset(numOfInputs);
     mUpdatedProcessedDeferredPhi.reset(numOfInputs);
+    mConsumedItemCountsAtLoopExitPhi.reset(numOfInputs);
     mFullyProcessedItemCount.reset(numOfInputs);
 
     const auto numOfOutputs = out_degree(mKernelId, mBufferGraph);

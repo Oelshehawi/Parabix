@@ -130,7 +130,6 @@ void PipelineAnalysis::generateInitialBufferGraph() {
                     default: break;
                 }
             }
-
             if (cannotBePlacedIntoThreadLocalMemory) {
                 bn.Locality = BufferLocality::PartitionLocal;
             }
@@ -442,10 +441,9 @@ void PipelineAnalysis::identifyOwnedBuffers() {
     // fill in any known managed buffers
     for (auto kernel = FirstKernel; kernel <= LastKernel; ++kernel) {
         const Kernel * const kernelObj = getKernel(kernel);
-        const auto internallySynchronized = kernelObj->hasAttribute(AttrId::InternallySynchronized);
         for (const auto e : make_iterator_range(out_edges(kernel, mBufferGraph))) {
             const BufferPort & rate = mBufferGraph[e];
-            if (LLVM_UNLIKELY(internallySynchronized || rate.IsManaged)) {
+            if (LLVM_UNLIKELY(rate.IsManaged)) {
                 const auto streamSet = target(e, mBufferGraph);
                 BufferNode & bn = mBufferGraph[streamSet];
                 // Every managed buffer is considered linear to the pipeline
@@ -728,7 +726,8 @@ void PipelineAnalysis::determineBufferSize(BuilderRef b) {
         auto bMin = floor(producerRate.Minimum * MinimumNumOfStrides[producer]);
         // const auto & maxStrides = bn.isNonThreadLocal() ? ExpectedNumOfStrides : MaximumNumOfStrides;
         const auto & maxStrides = MaximumNumOfStrides;
-        auto bMax = ceiling(producerRate.Maximum * maxStrides[producer]);
+        const auto max = std::max(maxStrides[producer], 1U);
+        auto bMax = ceiling(producerRate.Maximum * max);
 
         for (const auto e : make_iterator_range(out_edges(streamSet, mBufferGraph))) {
 
@@ -742,8 +741,11 @@ void PipelineAnalysis::determineBufferSize(BuilderRef b) {
             assert (!processingRate.isFixed() || consumerRate.Minimum == consumerRate.Maximum);
             #endif
 
-            const auto cMin = floor(consumerRate.Minimum * MinimumNumOfStrides[consumer]);
-            const auto cMax = ceiling(consumerRate.Maximum * maxStrides[consumer]);
+            const auto min = std::max(MinimumNumOfStrides[consumer], 1U);
+
+            const auto cMin = floor(consumerRate.Minimum * min);
+            const auto max = std::max(maxStrides[consumer], 1U);
+            const auto cMax = ceiling(consumerRate.Maximum * max);
 
             assert (cMax >= cMin);
 
@@ -858,11 +860,17 @@ void PipelineAnalysis::addStreamSetsToBufferGraph(BuilderRef b) {
                 auto mult = mNumOfThreads + (disableThreadLocalMemory ? 1U : 0U);
                 auto bufferSize = bn.RequiredCapacity * mult;
                 assert (bufferSize > 0);
+                #ifdef NON_THREADLOCAL_BUFFER_CAPACITY_MULTIPLIER
+                bufferSize *= NON_THREADLOCAL_BUFFER_CAPACITY_MULTIPLIER;
+                #endif
                 buffer = new DynamicBuffer(streamSet, b, output.getType(), bufferSize, bn.OverflowCapacity, bn.UnderflowCapacity, bn.IsLinear, 0U);
             } else {
                 auto bufferSize = bn.RequiredCapacity;
                 if (bn.Locality == BufferLocality::PartitionLocal || bn.CrossesHybridThreadBarrier) {
                     bufferSize *= (mNumOfThreads + (disableThreadLocalMemory ? 1U : 0U));
+                    #ifdef NON_THREADLOCAL_BUFFER_CAPACITY_MULTIPLIER
+                    bufferSize *= NON_THREADLOCAL_BUFFER_CAPACITY_MULTIPLIER;
+                    #endif
                 }
                 buffer = new StaticBuffer(streamSet, b, output.getType(), bufferSize, bn.OverflowCapacity, bn.UnderflowCapacity, bn.IsLinear, 0U);
             }
