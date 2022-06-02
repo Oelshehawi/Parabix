@@ -163,7 +163,13 @@ protected:
 
 class MatchedSegmentsKernel : public pablo::PabloKernel {
 public:
-    MatchedSegmentsKernel(BuilderRef builder, StreamSet * OriginalMatches, StreamSet * CodewordMatches, StreamSet * dictionaryBoundaryBreaks, StreamSet * Matches, StreamSet * segmentStarts);
+    MatchedSegmentsKernel(BuilderRef builder,
+                          StreamSet * OriginalMatches,
+                          StreamSet * CodewordMatches,
+                          StreamSet * dictionaryBoundaryBreaks,
+                          StreamSet * Matches,
+                          StreamSet * segmentStarts,
+                          StreamSet * dictStartPartialSum);
 protected:
     void generatePabloMethod() override;
 };
@@ -172,9 +178,6 @@ kernel::StreamSet * ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> & P,
                    EncodingInfo & encodingScheme,
                    StreamSet * const Basis,
                    StreamSet * const Results,
-                   StreamSet * const hashtableMarks,
-                   StreamSet * const decodedMarks,
-                   StreamSet * filterSpan,
                    bool matchOnly = false);
 
 }

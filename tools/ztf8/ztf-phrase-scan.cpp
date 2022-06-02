@@ -2874,7 +2874,7 @@ SegOffsetCalcKernel::SegOffsetCalcKernel(BuilderRef b,
                    {Binding{"byteData", byteData, FixedRate()},
                     Binding{"segBreaks", segBoundary, FixedRate()}},
                    {}, {}, {},{}), mOffsetFlag(offsetFlag) {
-    mOutputStreamSets.emplace_back("segmentPartialSum", segmentPartialSum, PopcountOf("segBreaks"), Add1());
+    mOutputStreamSets.emplace_back("segmentPartialSum", segmentPartialSum, PopcountOf("segBreaks"), Add1()); // last item will be 0 for dictEndPartialSum
     addInternalScalar(b->getSizeTy(), "index");
     addInternalScalar(b->getSizeTy(), "processedSubBlockSize");
     addInternalScalar(b->getSizeTy(), "producedIdx");
@@ -2930,7 +2930,7 @@ void SegOffsetCalcKernel::generateMultiBlockLogic(BuilderRef b, Value * const nu
     b->CreateCondBr(b->CreateICmpNE(nextStrideNo, numOfStrides), stridePrologue, stridesDone);
 
     b->SetInsertPoint(stridesDone);
-    b->CreateCondBr(b->CreateAnd(b->isFinal(), b->CreateICmpEQ(b->getSize(mOffsetFlag), sz_ONE)), writeNextSegStart, segDone);
+    b->CreateCondBr(b->isFinal(), writeNextSegStart, segDone);
 
     b->SetInsertPoint(writeNextSegStart);
     // b->CallPrintInt("avail", avail);
@@ -2949,18 +2949,26 @@ SegmentFilter::SegmentFilter(BuilderRef b,
                                 StreamSet * const offsetStartData,
                                 StreamSet * const offsetEndData,
                                 StreamSet * const byteData,
-                                StreamSet * const filtereData,
-                                unsigned strideBlocks)
-: MultiBlockKernel(b, "SegmentFilter" +  std::to_string(strideBlocks),
-                   {Binding{"MatchesBySegment", MatchesBySegment, FixedRate(2), Deferred()},
+                                StreamSet * const filtereData)
+: MultiBlockKernel(b, "SegmentFilter_" +  std::to_string(offsetStartData->getNumElements()) + "_" + std::to_string(byteData->getNumElements()),
+                   {Binding{"MatchesBySegment", MatchesBySegment, FixedRate(1)},
                     Binding{"offsetStartData", offsetStartData, FixedRate(1)},
                     // offsetStartData 1 more item than the number of segments.
                     // last value is the end of compressed bytes.
                     Binding{"offsetEndData", offsetEndData, FixedRate(1)},
-                    Binding{"byteData", byteData, GreedyRate(), Deferred()}},
+                    Binding{"byteData", byteData, GreedyRate(1), Deferred()}},
                    {}, {}, {}, {}) {
-    mOutputStreamSets.emplace_back("filtereData", filtereData, BoundedRate(1, 1048576));
+    mOutputStreamSets.emplace_back("filtereData", filtereData, BoundedRate(0, 1048576));
     addInternalScalar(b->getSizeTy(), "bitIdx");
+    addInternalScalar(b->getSizeTy(), "startOffset");
+    /*
+    index 0:
+    offsetStartData -> start of seg 2
+    offsetEndData   -> end of dict of seg 1
+    segSize         -> offsetStartData - startOffset
+    dictSize        -> offsetEndData - startOffset
+    set startOffset to offsetStartData
+    */
     setStride(1);
 }
 void SegmentFilter::generateMultiBlockLogic(BuilderRef b, Value * const numOfStrides) {
@@ -2980,9 +2988,24 @@ void SegmentFilter::generateMultiBlockLogic(BuilderRef b, Value * const numOfStr
     BasicBlock * const filterDict = b->CreateBasicBlock("filterDict");
 
     Value * const segProcessed = b->getProcessedItemCount("MatchesBySegment");
+    Value * const segAvail = b->getAvailableItemCount("MatchesBySegment");
     Value * const produced = b->getProducedItemCount("filtereData");
     Value * const availBytes = b->getAvailableItemCount("byteData");
     Value * const processedBytes = b->getProcessedItemCount("byteData");
+    Value * const availStarts = b->getAvailableItemCount("offsetStartData");
+    Value * const processedStarts = b->getProcessedItemCount("offsetStartData");
+    Value * const availEnds = b->getAvailableItemCount("offsetEndData");
+    Value * const processedEnds = b->getProcessedItemCount("offsetEndData");
+    // b->CallPrintInt("numOfStrides", numOfStrides);
+    // b->CallPrintInt("segAvail", segAvail);
+    // b->CallPrintInt("segProcessed", segProcessed);
+    // b->CallPrintInt("availBytes", availBytes);
+    // b->CallPrintInt("processedBytes", processedBytes);
+    // b->CallPrintInt("availStarts", availStarts);
+    // b->CallPrintInt("processedStarts", processedStarts);
+    // b->CallPrintInt("availEnds", availEnds);
+    // b->CallPrintInt("processedEnds", processedEnds);
+    
     b->CreateBr(processSegment);
 
     b->SetInsertPoint(processSegment);
@@ -2992,8 +3015,9 @@ void SegmentFilter::generateMultiBlockLogic(BuilderRef b, Value * const numOfStr
     segProduced->addIncoming(produced, entry);
     Value * nextStrideNo = b->CreateAdd(strideNo, sz_ONE);
 
-    Value * const segIdx = b->CreateAdd(strideNo, segProcessed);
-    Value * segBase = b->CreateSub(segIdx, b->CreateURem(segIdx, b->getSize(8)));
+    Value * const segIdx = b->CreateAdd(strideNo, segProcessed, "segIdx");
+    // b->CallPrintInt("segIdx", segIdx);
+    Value * segBase = b->CreateSub(segIdx, b->CreateURem(segIdx, b->getSize(8))); // does segBase start from 0?
     Value * matchesBasePtr = b->CreateBitCast(b->getRawInputPointer("MatchesBySegment", segBase), sizeTy->getPointerTo());
     Value * matches = b->CreateAlignedLoad(matchesBasePtr, 1);
     Value * copySeg = b->CreateAnd(matches, b->CreateShl(sz_ONE, b->getScalarField("bitIdx")));
@@ -3001,62 +3025,60 @@ void SegmentFilter::generateMultiBlockLogic(BuilderRef b, Value * const numOfStr
     // b->CallPrintInt("matches", matches);
     // b->CallPrintInt("copySeg", copySeg);
     // b->CallPrintInt("segProduced", segProduced);
-    Value * segStartPtr = b->CreateBitCast(b->getRawInputPointer("offsetStartData", segIdx), b->getSizeTy()->getPointerTo());
-    Value * segStartPos = b->CreateAlignedLoad(segStartPtr, 1);
-    segStartPos = b->CreateSub(segStartPos, sz_ONE);
-
-    Value * const segEndIdx = b->CreateAdd(segIdx, sz_ONE);
-    Value * segEndPtr = b->CreateBitCast(b->getRawInputPointer("offsetStartData", segEndIdx), b->getSizeTy()->getPointerTo());
+    Value * segEndPtr = b->CreateBitCast(b->getRawInputPointer("offsetStartData", segIdx), b->getSizeTy()->getPointerTo());
     Value * segEndPos = b->CreateAlignedLoad(segEndPtr, 1);
-    segEndPos = b->CreateSub(segEndPos, sz_ONE);
+    segEndPos = b->CreateSelect(b->CreateICmpEQ(segEndPos, availBytes), segEndPos, b->CreateAdd(segEndPos, sz_ONE));
+    // b->CallPrintInt("segEndPos", segEndPos);
 
+    Value * segStartPos = b->getScalarField("startOffset");
+    // b->CallPrintInt("segStartPos", segStartPos);
     b->CreateCondBr(b->CreateICmpUGT(copySeg, sz_ZERO), filterSeg, filterDict);
 
     b->SetInsertPoint(filterSeg);
     Value * segSize = b->CreateSub(segEndPos, segStartPos);
+    // b->CallPrintInt("segSize", segSize);
     b->CreateMemCpy(b->getRawOutputPointer("filtereData", segProduced), b->getRawInputPointer("byteData", segStartPos), segSize, 1);
-    
     Value * const nextWritePos = b->CreateAdd(segProduced, segSize);
+    // b->CallPrintInt("nextWritePos", nextWritePos);
     b->CreateBr(segmentsDone);
 
     b->SetInsertPoint(filterDict);
-    // offsetStartData
-    //      idx = 0 -> start of 1st seg
-    //      idx = 1 -> start of 2nd seg
-    // offsetEndData
-    //      idx = 0 -> end of 1st seg dict
-    //      idx = 1 -> end of 2nd seg dict
-    // dictSize
-    //      seg 1 -> offsetEndData[0] - offsetStartData[0]
-    //      seg 2 -> offsetEndData[1] - offsetStartData[1]
-    // Value * dictStartPtr = b->CreateBitCast(b->getRawInputPointer("offsetStartData", segIdx), b->getSizeTy()->getPointerTo());
-    // Value * dictStartPos = b->CreateAlignedLoad(dictStartPtr, 1);
-    Value * dictStartPos = segStartPos; //b->CreateSub(dictStartPos, sz_ONE); // gives position of first "fe" of dict start boundary
-
+    Value * dictStartPos = segStartPos;
     Value * dictEndPtr = b->CreateBitCast(b->getRawInputPointer("offsetEndData", segIdx), b->getSizeTy()->getPointerTo());
     Value * dictEndPos = b->CreateAlignedLoad(dictEndPtr, 1); // position of last "ff" in dict end boundary
-    dictEndPos = b->CreateAdd(dictEndPos, sz_ONE); // position after last "ff" in dictionary
-
+    dictEndPos = b->CreateSelect(b->CreateICmpEQ(dictEndPos, availBytes), dictEndPos, b->CreateAdd(dictEndPos, sz_ONE));  // position after last "ff" in dictionary
     Value * dictSize = b->CreateSub(dictEndPos, dictStartPos);
+    // b->CallPrintInt("dictEndPos", dictEndPos);
+    // b->CallPrintInt("dictSize", dictSize);
     b->CreateMemCpy(b->getRawOutputPointer("filtereData", segProduced), b->getRawInputPointer("byteData", dictStartPos), dictSize, 1);
 
     Value * const nextWritePosAfterDict = b->CreateAdd(segProduced, dictSize);
+    // b->CallPrintInt("nextWritePosAfterDict", nextWritePosAfterDict);
     b->CreateBr(segmentsDone);
 
     b->SetInsertPoint(segmentsDone);
     PHINode * const strideProduced = b->CreatePHI(sizeTy, 2, "strideProduced");
     strideProduced->addIncoming(nextWritePos, filterSeg);
     strideProduced->addIncoming(nextWritePosAfterDict, filterDict);
+
     segProduced->addIncoming(strideProduced, segmentsDone);
     strideNo->addIncoming(nextStrideNo, segmentsDone);
 
+    PHINode * const processed = b->CreatePHI(sizeTy, 2, "processed");
+    processed->addIncoming(segEndPos, filterSeg);
+    processed->addIncoming(segEndPos, filterDict);
+
+    // b->CallPrintInt("strideProduced", strideProduced);
+    // b->CallPrintInt("b->isFinal()", b->isFinal());
+
     b->setScalarField("bitIdx", b->CreateSelect(b->CreateICmpEQ(b->CreateURem(segIdx, b->getSize(8)), sz_ZERO), sz_ZERO, b->CreateAdd(b->getScalarField("bitIdx"), sz_ONE)));
+    b->setScalarField("startOffset", processed);
     b->CreateCondBr(b->CreateICmpNE(nextStrideNo, numOfStrides), processSegment, stridesDone);
 
     b->SetInsertPoint(stridesDone);
-    b->setProcessedItemCount("byteData", b->CreateSelect(b->isFinal(), availBytes, segEndPos));
+    // b->CallPrintInt("processed-fin", processed);
+    // b->CallPrintInt("availBytes-fin", availBytes);
+    b->setProcessedItemCount("byteData", b->CreateSelect(b->CreateICmpUGT(processed, availBytes), availBytes, processed)); //b->CreateSub(segEndPos, sz_ONE)));
+    // b->CallPrintInt("strideProduced-final", strideProduced);
     b->setProducedItemCount("filtereData", strideProduced);
-    // b->CallPrintInt("strideProduced", strideProduced);
-    Value * const processedIdx = b->CreateSelect(b->CreateICmpEQ(segIdx, sz_ZERO), sz_ZERO, b->CreateSub(segIdx, sz_ONE));
-    b->setProcessedItemCount("offsetStartData", b->CreateSelect(b->isFinal(), segIdx, processedIdx));
 }

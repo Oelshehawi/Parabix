@@ -149,9 +149,6 @@ GrepEngine::GrepEngine(BaseDriver &driver) :
     mU8index(nullptr),
     mGCB_stream(nullptr),
     mWordBoundary_stream(nullptr),
-    mZTFHashtableMarks(nullptr),
-    mZTFDecodedMarks(nullptr),
-    mFilterSpan(nullptr),
     mCmpLineBreakStream(nullptr),
     mCmpU8index(nullptr),
     mCmpGCB_stream(nullptr),
@@ -675,18 +672,34 @@ void GrepEngine::ZTFPreliminaryGrep(const std::unique_ptr<ProgramBuilder> & P, r
 }
 
 void GrepEngine::ZTFDecmpLogic(const std::unique_ptr<ProgramBuilder> & P, StreamSet * Source, StreamSet * const Results, StreamSet * const decompressed_basis, bool matchOnlyMode) {
-    mZTFHashtableMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size()); ///TODO: reduce the number of streams to 4+3
-    mZTFDecodedMarks = P->CreateStreamSet(2/*SymCount*/ * encodingScheme1.byLength.size());
-    mFilterSpan = P->CreateStreamSet(1);
     StreamSet * SourceBits = Source;
     if (Source->getNumElements() == 1) {
         StreamSet * const src_bits = P->CreateStreamSet(8);
         P->CreateKernelCall<S2PKernel>(Source, src_bits);
         SourceBits = src_bits;
     }
-    StreamSet * const ztfHash_u8bytes = ZTFLinesLogic(P, encodingScheme1, SourceBits, Results, mZTFHashtableMarks, mZTFDecodedMarks, mFilterSpan, matchOnlyMode);
+    StreamSet * const ztfHash_u8bytes = ZTFLinesLogic(P, encodingScheme1, SourceBits, Results, matchOnlyMode);
+    StreamSet * const filtered_basis = P->CreateStreamSet(8);
+    P->CreateKernelCall<S2PKernel>(ztfHash_u8bytes, filtered_basis);
+    // Verify filtered segments
+    P->CreateKernelCall<StdOutKernel>(ztfHash_u8bytes);
+
+    StreamSet * const ztfInsertionLengths = P->CreateStreamSet(5);
+    P->CreateKernelCall<ZTF_PhraseExpansionDecoder>(encodingScheme1, filtered_basis, ztfInsertionLengths, false);
+    StreamSet * const ztfRunSpreadMask = InsertionSpreadMask(P, ztfInsertionLengths);
+    StreamSet * const ztfHash_u8_Basis = P->CreateStreamSet(8);
+    SpreadByMask(P, ztfRunSpreadMask, filtered_basis, ztfHash_u8_Basis);
+
+    StreamSet * decodedMarks = P->CreateStreamSet(2 * encodingScheme1.byLength.size());
+    StreamSet * hashtableMarks = P->CreateStreamSet(2 * encodingScheme1.byLength.size());
+    StreamSet * hashtableSpan = P->CreateStreamSet(1);
+
+    P->CreateKernelCall<ZTF_PhraseDecodeLengths>(encodingScheme1, 2/*SymCount*/, ztfHash_u8_Basis, decodedMarks, hashtableMarks, hashtableSpan, false);
+    StreamSet * const spreaded_u8bytes = P->CreateStreamSet(1, 8);
+    P->CreateKernelCall<P2SKernel>(ztfHash_u8_Basis, spreaded_u8bytes);
+
     const auto n = encodingScheme1.byLength.size();
-    StreamSet * u8bytes = ztfHash_u8bytes;
+    StreamSet * u8bytes = spreaded_u8bytes;
     for(unsigned sym = 0; sym < 2/*SymCount*/; sym++) {
         unsigned startIdx = 0;
         if (sym > 0) {
@@ -696,8 +709,8 @@ void GrepEngine::ZTFDecmpLogic(const std::unique_ptr<ProgramBuilder> & P, Stream
             const unsigned idx = (sym * encodingScheme1.byLength.size()) + i;
             StreamSet * const hashGroupMarks = P->CreateStreamSet(1);
             StreamSet * const groupDecoded = P->CreateStreamSet(1);
-            P->CreateKernelCall<StreamSelect>(hashGroupMarks, Select(mZTFHashtableMarks, {idx}));
-            P->CreateKernelCall<StreamSelect>(groupDecoded, Select(mZTFDecodedMarks, {idx}));
+            P->CreateKernelCall<StreamSelect>(hashGroupMarks, Select(hashtableMarks, {idx}));
+            P->CreateKernelCall<StreamSelect>(groupDecoded, Select(decodedMarks, {idx}));
 
             StreamSet * const input_bytes = u8bytes;
             StreamSet * const output_bytes = P->CreateStreamSet(1, 8);
@@ -709,10 +722,8 @@ void GrepEngine::ZTFDecmpLogic(const std::unique_ptr<ProgramBuilder> & P, Stream
     }
     StreamSet * const decoded = P->CreateStreamSet(8);
     P->CreateKernelCall<S2PKernel>(u8bytes, decoded);
-    FilterByMask(P, mFilterSpan, decoded, decompressed_basis);
-    // StreamSet * const filtered_bytes = P->CreateStreamSet(1, 8);
-    // P->CreateKernelCall<P2SKernel>(decompressed_basis, filtered_bytes);
-    // P->CreateKernelCall<StdOutKernel>(filtered_bytes);
+    FilterByMask(P, hashtableSpan, decoded, decompressed_basis);
+    // P->CreateKernelCall<StdOutKernel>(u8bytes);
 }
 
 StreamSet * GrepEngine::grepPipeline(const std::unique_ptr<ProgramBuilder> & P, StreamSet * InputStream) {
@@ -755,9 +766,6 @@ void GrepEngine::ztfGrepPipeline(const std::unique_ptr<ProgramBuilder> & P, Stre
     }
     // Selective decompression
     StreamSet * SourceStream = getBasis(P, ByteStream);
-    mZTFHashtableMarks = nullptr;
-    mZTFDecodedMarks = nullptr;
-    mFilterSpan = nullptr;
     mCmpLineBreakStream = nullptr;
     mCmpU8index = nullptr;
     mCmpGCB_stream = nullptr;
@@ -1123,7 +1131,7 @@ void EmitMatchesEngine::grepCodeGen() {
         ztfGrepPipeline(E1, ByteStream, decompressedByteStream);
         // verified decompressed output
         // E1->CreateKernelCall<StdOutKernel>(decompressedByteStream);
-        grepPipeline(E1, decompressedByteStream);
+        // grepPipeline(E1, decompressedByteStream); //decompressedByteStream);
     }
     else {
         grepPipeline(E1, ByteStream);

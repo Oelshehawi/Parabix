@@ -722,6 +722,7 @@ void MatchedSegmentsKernel::generatePabloMethod() {
     auto cipherTextCandidateMatches = getInputStreamSet("MatchesInCipherText")[0];
     auto codewordMatches = getInputStreamSet("CodewordMatches")[0];
     auto matches = pb.createOr(cipherTextCandidateMatches, codewordMatches);
+    PabloAST * EOFbit = pb.createAtEOF(pb.createAdvance(pb.createOnes(), 1));
     PabloAST * dictStarts = pb.createExtract(getInputStreamVar("dictStart"), pb.getInteger(0));
     PabloAST * notDictStart = pb.createNot(dictStarts);
     PabloAST * match_follow = pb.createMatchStar(matches, notDictStart);
@@ -729,17 +730,25 @@ void MatchedSegmentsKernel::generatePabloMethod() {
     pb.createAssign(pb.createExtract(getOutputStreamVar("SegmentStarts"), 0), segmentStarts);
     Var * const matchedSegments = getOutputStreamVar("MatchedSegments");
     pb.createAssign(pb.createExtract(matchedSegments, pb.getInteger(0)), pb.createAnd(match_follow, dictStarts, "MatchedSegments"));
+    pb.createAssign(pb.createExtract(getOutputStreamVar("dictStartPS"), pb.getInteger(0)), pb.createOr(pb.createLookahead(dictStarts, 2), EOFbit));
 }
 
-MatchedSegmentsKernel::MatchedSegmentsKernel (BuilderRef iBuilder, StreamSet * MatchesInCipherText, StreamSet * CodewordMatches, StreamSet * dictStart, StreamSet * MatchedSegments, StreamSet * SegmentStarts)
+MatchedSegmentsKernel::MatchedSegmentsKernel (BuilderRef iBuilder,
+                                              StreamSet * MatchesInCipherText,
+                                              StreamSet * CodewordMatches,
+                                              StreamSet * dictStart,
+                                              StreamSet * MatchedSegments,
+                                              StreamSet * SegmentStarts,
+                                              StreamSet * dictStartPartialSum)
 : PabloKernel(iBuilder, "MatchedSegmentsKernel" + std::to_string(MatchesInCipherText->getNumElements()),
 // inputs
 {Binding{"MatchesInCipherText", MatchesInCipherText},
  Binding{"CodewordMatches", CodewordMatches},
- Binding{"dictStart", dictStart, FixedRate()}},
+ Binding{"dictStart", dictStart, FixedRate(), LookAhead(3)}},
 // output
 {Binding{"MatchedSegments", MatchedSegments, FixedRate(), Add1()},
- Binding{"SegmentStarts", SegmentStarts, FixedRate(), Add1()}}) {
+ Binding{"SegmentStarts", SegmentStarts, FixedRate(), Add1()},
+ Binding{"dictStartPS", dictStartPartialSum, FixedRate(), Add1()}}) {
 
 }
 
@@ -747,12 +756,10 @@ kernel::StreamSet * kernel::ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> 
                                 EncodingInfo & encodingScheme,
                                 StreamSet * const Basis,
                                 StreamSet * const Results,
-                                StreamSet * const hashtableMarks,
-                                StreamSet * const decodedMarks,
-                                StreamSet * const filterSpan,
                                 bool matchOnlyMode) {
 // NOTE: The grep output requires complete lines to be printed as output and lines may be divided across multiple segments.
     StreamSet * const dictStart = P->CreateStreamSet(1);
+    StreamSet * const dictStartPS = P->CreateStreamSet(1); // lookahead dictStart by 2 buts to calculate the offset starting from 2nd segment.
     StreamSet * const dictEnd = P->CreateStreamSet(1);
     StreamSet * const candidateMatchesInDict = P->CreateStreamSet(1);
     StreamSet * const codeWordInCipherText = P->CreateStreamSet(1);
@@ -765,7 +772,7 @@ kernel::StreamSet * kernel::ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> 
        ii. parse the compressed data, create a hashtable of the codewords with candidate matches.
       iii. mark the codewords which have a hashtable entry.
 */
-    /// WIP: Update results to remove any invalid matches in the dictionary (all done except pfx byte)
+    /// TODO: Update results to remove any invalid matches in the dictionary (all done except pfx byte)
     // Input: basis, candidateMatches
     // Output: candidateMatchCodeWordInDict, nonCandidateMatchCodeWordInDict, codeWordInCipherText
     P->CreateKernelCall<ProcessCandidateMatches>(encodingScheme, Basis, Results, dictStart, dictEnd, candidateMatchesInDict, nonCandidateMatchesInDict, codeWordInCipherText/*all codewords in ciphertext*/, candidateMatchesInCipherText/*plaintext match of sub-expression*/, matchOnlyMode); // add 1-bit at the end of dictEnd stream
@@ -776,14 +783,15 @@ kernel::StreamSet * kernel::ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> 
     P->CreateKernelCall<FinalizeCandidateMatches>(encodingScheme, basis_bytes, candidateMatchesInDict, nonCandidateMatchesInDict, codeWordInCipherText, allCandidateMatches);
     StreamSet * const MatchedSegmentEnds = P->CreateStreamSet();
     StreamSet * SegmentStarts = P->CreateStreamSet(1, 1); // Advance dictStart by 1 position
-    P->CreateKernelCall<MatchedSegmentsKernel>(candidateMatchesInCipherText, allCandidateMatches, dictStart, MatchedSegmentEnds, SegmentStarts);
+    P->CreateKernelCall<MatchedSegmentsKernel>(candidateMatchesInCipherText, allCandidateMatches, dictStart, MatchedSegmentEnds, SegmentStarts, dictStartPS);
+    // P->CreateKernelCall<DebugDisplayKernel>("dictStartPS", dictStartPS);
     StreamSet * MatchesBySegment = P->CreateStreamSet(1, 1);
     // 1-bit per segment indicating presense of candidate matches in the segment
     FilterByMask(P, dictStart, MatchedSegmentEnds, MatchesBySegment);
     // P->CreateKernelCall<DebugDisplayKernel>("MatchesBySegment", MatchesBySegment); // filter the bits that collide with dictionary start and also is a match at the segment end
 
     StreamSet * const dictStartPartialSum = P->CreateStreamSet(1, 64);
-    P->CreateKernelCall<SegOffsetCalcKernel>(basis_bytes, dictStart, dictStartPartialSum, true);
+    P->CreateKernelCall<SegOffsetCalcKernel>(basis_bytes, dictStartPS, dictStartPartialSum, true);
     // P->CreateKernelCall<DebugDisplayKernel>("dictStartPartialSum", dictStartPartialSum);
     // need to re-create complete dicitonary even if a few segments are to be decompressed
     StreamSet * const dictEndPartialSum = P->CreateStreamSet(1, 64);
@@ -794,28 +802,5 @@ kernel::StreamSet * kernel::ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> 
     StreamSet * const filtered_bytes = P->CreateStreamSet(1, 8);
     P->CreateKernelCall<SegmentFilter>(MatchesBySegment, dictStartPartialSum, dictEndPartialSum, basis_bytes, filtered_bytes);
     // P->CreateKernelCall<StdOutKernel>(filtered_bytes);
-
-    StreamSet * const filtered_basis = P->CreateStreamSet(8);
-    P->CreateKernelCall<S2PKernel>(filtered_bytes, filtered_basis);
-    // P->CreateKernelCall<DebugDisplayKernel>("filtered_basis", filtered_basis);
-//-----------------------------------------------------------------------------------------------------------------------
-    // FilterByMask to filter segments with candidate matches
-    StreamSet * MatchedSegmentStarts = P->CreateStreamSet(1, 1);
-    SpreadByMask(P, SegmentStarts, MatchesBySegment, MatchedSegmentStarts);
-    StreamSet * MatchedSegmentSpans = P->CreateStreamSet(1, 1);
-    P->CreateKernelCall<LineSpansKernel>(MatchedSegmentStarts, MatchedSegmentEnds, MatchedSegmentSpans);
-    // P->CreateKernelCall<DebugDisplayKernel>("MatchedSegmentSpans", MatchedSegmentSpans);
-    StreamSet * const toDecompress_basis = P->CreateStreamSet(8);
-    FilterByMask(P, MatchedSegmentSpans, Basis, toDecompress_basis);
-//-----------------------------------------------------------------------------------------------------------------------
-    StreamSet * const ztfInsertionLengths = P->CreateStreamSet(5);
-    P->CreateKernelCall<ZTF_PhraseExpansionDecoder>(encodingScheme, filtered_basis, ztfInsertionLengths, false);
-    StreamSet * const ztfRunSpreadMask = InsertionSpreadMask(P, ztfInsertionLengths);
-    StreamSet * const ztfHash_u8_Basis = P->CreateStreamSet(8);
-    SpreadByMask(P, ztfRunSpreadMask, filtered_basis, ztfHash_u8_Basis);
-    P->CreateKernelCall<ZTF_PhraseDecodeLengths>(encodingScheme, 2/*SymCount*/, ztfHash_u8_Basis, decodedMarks, hashtableMarks, filterSpan, false);
-    // P->CreateKernelCall<DebugDisplayKernel>("filterSpan", filterSpan);
-    StreamSet * const ztfHash_u8bytes = P->CreateStreamSet(1, 8);
-    P->CreateKernelCall<P2SKernel>(ztfHash_u8_Basis, ztfHash_u8bytes);
-    return ztfHash_u8bytes;
+    return filtered_bytes;
 }

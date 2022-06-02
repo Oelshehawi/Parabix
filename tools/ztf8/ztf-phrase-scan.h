@@ -177,10 +177,9 @@ public:
     SegmentFilter(BuilderRef b,
                     StreamSet * const MatchesBySegment,
                     StreamSet * const offsetStartData,
-                    StreamSet * offsetEndData,
+                    StreamSet * const offsetEndData,
                     StreamSet * const byteData,
-                    StreamSet * const filtereData,
-                    unsigned strideBlocks = 8);
+                    StreamSet * const filtereData);
 private:
     void generateMultiBlockLogic(BuilderRef iBuilder, llvm::Value * const numOfStrides) override;
 };

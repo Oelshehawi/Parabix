@@ -195,9 +195,6 @@ protected:
     kernel::StreamSet * mU8index;
     kernel::StreamSet * mGCB_stream;
     kernel::StreamSet * mWordBoundary_stream;
-    kernel::StreamSet * mZTFHashtableMarks;
-    kernel::StreamSet * mZTFDecodedMarks;
-    kernel::StreamSet * mFilterSpan;
     // TODO: make these streams local to ztfGrepPipeline
     kernel::StreamSet * mCmpLineBreakStream;
     kernel::StreamSet * mCmpU8index;
