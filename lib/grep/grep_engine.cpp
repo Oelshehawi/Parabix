@@ -714,7 +714,7 @@ void GrepEngine::ZTFDecmpLogic(const std::unique_ptr<ProgramBuilder> & P, Stream
     StreamSet * const filtered_basis = P->CreateStreamSet(8);
     P->CreateKernelCall<S2PKernel>(ztfHash_u8bytes, filtered_basis);
     // Verify filtered segments
-    P->CreateKernelCall<StdOutKernel>(ztfHash_u8bytes);
+    // P->CreateKernelCall<StdOutKernel>(ztfHash_u8bytes);
 
     StreamSet * const ztfInsertionLengths = P->CreateStreamSet(5);
     P->CreateKernelCall<ZTF_PhraseExpansionDecoder>(encodingScheme1, filtered_basis, ztfInsertionLengths, false);
@@ -1163,7 +1163,7 @@ void EmitMatchesEngine::grepCodeGen() {
         ztfGrepPipeline(E1, ByteStream, decompressedByteStream);
         // verified decompressed output
         // E1->CreateKernelCall<StdOutKernel>(decompressedByteStream);
-        // grepPipeline(E1, decompressedByteStream); //decompressedByteStream);
+        grepPipeline(E1, decompressedByteStream);
     }
     else {
         grepPipeline(E1, ByteStream);

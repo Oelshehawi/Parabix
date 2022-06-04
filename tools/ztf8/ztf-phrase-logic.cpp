@@ -26,6 +26,7 @@
 #include <grep/grep_kernel.h>
 #include <kernel/streamutils/deletion.h>
 #include <kernel/streamutils/streams_merge.h>
+#include <kernel/streamutils/stream_shift.h>
 #include <kernel/util/linebreak_kernel.h>
 
 using namespace pablo;
@@ -465,7 +466,7 @@ ProcessCandidateMatches::ProcessCandidateMatches(BuilderRef kb,
 : PabloKernel(kb, "ProcessCandidateMatches_" + std::to_string(matchOnly),
             {Binding{"basis", basis, FixedRate(), LookAhead(encodingScheme.maxEncodingBytes() - 1)},
              Binding{"results", results, FixedRate(), LookAhead(1)}},
-            {Binding{"dictStart", dictStart}, // FixedRate(), Add1()},
+            {Binding{"dictStart", dictStart, FixedRate(), Add1()},
              Binding{"dictEnd", dictEnd},
              Binding{"candidateMatchesInDict", candidateMatchesInDict, FixedRate(), Add1()},
              Binding{"nonCandidateMatchesInDict", nonCandidateMatchesInDict, FixedRate(), Add1()},
@@ -499,7 +500,7 @@ void ProcessCandidateMatches::generatePabloMethod() {
     PabloAST * hashTableBoundaryEnd = pb.createAnd(hashTableBoundaryCommon, hashTableBoundaryEndHi);
     PabloAST * hashTableBoundaryStartFinal = pb.createAnd(hashTableBoundaryStart, pb.createAdvance(hashTableBoundaryStart, 1));
     PabloAST * hashTableBoundaryEndFinal = pb.createAnd(hashTableBoundaryEnd, pb.createAdvance(hashTableBoundaryEnd, 1));
-    // PabloAST * EOFbit = pb.createAtEOF(pb.createAdvance(pb.createOnes(), 1));
+    PabloAST * EOFbit = pb.createAtEOF(pb.createAdvance(pb.createOnes(), 1));
 
     PabloAST * hashTableSpan = pb.createIntrinsicCall(pablo::Intrinsic::SpanUpTo, {hashTableBoundaryStartFinal, hashTableBoundaryEndFinal});
     PabloAST * toEliminate = pb.createAnd(pb.createLookahead(basis[7], 1), pb.createOr(hashTableBoundaryStart, hashTableBoundaryEnd));
@@ -571,7 +572,7 @@ void ProcessCandidateMatches::generatePabloMethod() {
     // AND with hashTableSpan gived nonCandidateMatchesInDict
     pb.createAssign(pb.createExtract(nonCandidateMatchesInDictVar, pb.getInteger(0)), pb.createAnd(hashTableSpan, pb.createXor(movedCandidateMatches, allGroupStream)));
     pb.createAssign(pb.createExtract(codeWordInCipherTextVar, pb.getInteger(0)), pb.createAnd(allGroupStream, pb.createNot(hashTableSpan)));
-    pb.createAssign(pb.createExtract(getOutputStreamVar("dictStart"), pb.getInteger(0)), hashTableBoundaryStartFinal);
+    pb.createAssign(pb.createExtract(getOutputStreamVar("dictStart"), pb.getInteger(0)), pb.createOr(EOFbit, hashTableBoundaryStartFinal));
     pb.createAssign(pb.createExtract(getOutputStreamVar("dictEnd"), pb.getInteger(0)), hashTableBoundaryEndFinal);
     // pb.createDebugPrint(pb.createCount(hashTableBoundaryStartFinal), "s");
     // pb.createDebugPrint(pb.createCount(hashTableBoundaryEndFinal), "e");
@@ -724,13 +725,12 @@ void MatchedSegmentsKernel::generatePabloMethod() {
     auto matches = pb.createOr(cipherTextCandidateMatches, codewordMatches);
     PabloAST * EOFbit = pb.createAtEOF(pb.createAdvance(pb.createOnes(), 1));
     PabloAST * dictStarts = pb.createExtract(getInputStreamVar("dictStart"), pb.getInteger(0));
+    PabloAST * dictStartPS = pb.createOr(pb.createLookahead(dictStarts, 2), EOFbit);
     PabloAST * notDictStart = pb.createNot(dictStarts);
     PabloAST * match_follow = pb.createMatchStar(matches, notDictStart);
-    PabloAST * segmentStarts = pb.createInFile(pb.createNot(pb.createAdvance(pb.createNot(dictStarts), 1)));
-    pb.createAssign(pb.createExtract(getOutputStreamVar("SegmentStarts"), 0), segmentStarts);
     Var * const matchedSegments = getOutputStreamVar("MatchedSegments");
     pb.createAssign(pb.createExtract(matchedSegments, pb.getInteger(0)), pb.createAnd(match_follow, dictStarts, "MatchedSegments"));
-    pb.createAssign(pb.createExtract(getOutputStreamVar("dictStartPS"), pb.getInteger(0)), pb.createOr(pb.createLookahead(dictStarts, 2), EOFbit));
+    pb.createAssign(pb.createExtract(getOutputStreamVar("dictStartPS"), pb.getInteger(0)), dictStartPS);
 }
 
 MatchedSegmentsKernel::MatchedSegmentsKernel (BuilderRef iBuilder,
@@ -738,7 +738,6 @@ MatchedSegmentsKernel::MatchedSegmentsKernel (BuilderRef iBuilder,
                                               StreamSet * CodewordMatches,
                                               StreamSet * dictStart,
                                               StreamSet * MatchedSegments,
-                                              StreamSet * SegmentStarts,
                                               StreamSet * dictStartPartialSum)
 : PabloKernel(iBuilder, "MatchedSegmentsKernel" + std::to_string(MatchesInCipherText->getNumElements()),
 // inputs
@@ -747,7 +746,6 @@ MatchedSegmentsKernel::MatchedSegmentsKernel (BuilderRef iBuilder,
  Binding{"dictStart", dictStart, FixedRate(), LookAhead(3)}},
 // output
 {Binding{"MatchedSegments", MatchedSegments, FixedRate(), Add1()},
- Binding{"SegmentStarts", SegmentStarts, FixedRate(), Add1()},
  Binding{"dictStartPS", dictStartPartialSum, FixedRate(), Add1()}}) {
 
 }
@@ -782,12 +780,13 @@ kernel::StreamSet * kernel::ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> 
     StreamSet * const allCandidateMatches = P->CreateStreamSet(1);
     P->CreateKernelCall<FinalizeCandidateMatches>(encodingScheme, basis_bytes, candidateMatchesInDict, nonCandidateMatchesInDict, codeWordInCipherText, allCandidateMatches);
     StreamSet * const MatchedSegmentEnds = P->CreateStreamSet();
-    StreamSet * SegmentStarts = P->CreateStreamSet(1, 1); // Advance dictStart by 1 position
-    P->CreateKernelCall<MatchedSegmentsKernel>(candidateMatchesInCipherText, allCandidateMatches, dictStart, MatchedSegmentEnds, SegmentStarts, dictStartPS);
+    P->CreateKernelCall<MatchedSegmentsKernel>(candidateMatchesInCipherText, allCandidateMatches, dictStart, MatchedSegmentEnds, dictStartPS);
     // P->CreateKernelCall<DebugDisplayKernel>("dictStartPS", dictStartPS);
     StreamSet * MatchesBySegment = P->CreateStreamSet(1, 1);
     // 1-bit per segment indicating presense of candidate matches in the segment
     FilterByMask(P, dictStart, MatchedSegmentEnds, MatchesBySegment);
+    StreamSet * MatchesBySegmentFinal = P->CreateStreamSet(1, 1);
+    P->CreateKernelCall<ShiftBack>(MatchesBySegment, MatchesBySegmentFinal, 1);
     // P->CreateKernelCall<DebugDisplayKernel>("MatchesBySegment", MatchesBySegment); // filter the bits that collide with dictionary start and also is a match at the segment end
 
     StreamSet * const dictStartPartialSum = P->CreateStreamSet(1, 64);
@@ -800,7 +799,7 @@ kernel::StreamSet * kernel::ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> 
 
     // Filter out the match segments -> FIX: some memory access issue persists!!
     StreamSet * const filtered_bytes = P->CreateStreamSet(1, 8);
-    P->CreateKernelCall<SegmentFilter>(MatchesBySegment, dictStartPartialSum, dictEndPartialSum, basis_bytes, filtered_bytes);
+    P->CreateKernelCall<SegmentFilter>(MatchesBySegmentFinal, dictStartPartialSum, dictEndPartialSum, basis_bytes, filtered_bytes);
     // P->CreateKernelCall<StdOutKernel>(filtered_bytes);
     return filtered_bytes;
 }

@@ -168,7 +168,6 @@ public:
                           StreamSet * CodewordMatches,
                           StreamSet * dictionaryBoundaryBreaks,
                           StreamSet * Matches,
-                          StreamSet * segmentStarts,
                           StreamSet * dictStartPartialSum);
 protected:
     void generatePabloMethod() override;

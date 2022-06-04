@@ -2874,7 +2874,7 @@ SegOffsetCalcKernel::SegOffsetCalcKernel(BuilderRef b,
                    {Binding{"byteData", byteData, FixedRate()},
                     Binding{"segBreaks", segBoundary, FixedRate()}},
                    {}, {}, {},{}), mOffsetFlag(offsetFlag) {
-    mOutputStreamSets.emplace_back("segmentPartialSum", segmentPartialSum, PopcountOf("segBreaks"), Add1()); // last item will be 0 for dictEndPartialSum
+    mOutputStreamSets.emplace_back("segmentPartialSum", segmentPartialSum, PopcountOf("segBreaks"));
     addInternalScalar(b->getSizeTy(), "index");
     addInternalScalar(b->getSizeTy(), "processedSubBlockSize");
     addInternalScalar(b->getSizeTy(), "producedIdx");
@@ -2981,6 +2981,7 @@ void SegmentFilter::generateMultiBlockLogic(BuilderRef b, Value * const numOfStr
     Value * const sz_ZERO = b->getSize(0);
     Value * const sz_ONE = b->getSize(1);
     BasicBlock * const entry = b->GetInsertBlock();
+    BasicBlock * const startSegment = b->CreateBasicBlock("startSegment");
     BasicBlock * const processSegment = b->CreateBasicBlock("processSegment");
     BasicBlock * const segmentsDone = b->CreateBasicBlock("segmentsDone");
     BasicBlock * const stridesDone = b->CreateBasicBlock("stridesDone");
@@ -3005,10 +3006,9 @@ void SegmentFilter::generateMultiBlockLogic(BuilderRef b, Value * const numOfStr
     // b->CallPrintInt("processedStarts", processedStarts);
     // b->CallPrintInt("availEnds", availEnds);
     // b->CallPrintInt("processedEnds", processedEnds);
-    
-    b->CreateBr(processSegment);
+    b->CreateBr(startSegment);
 
-    b->SetInsertPoint(processSegment);
+    b->SetInsertPoint(startSegment);
     PHINode * strideNo = b->CreatePHI(sizeTy, 2);
     strideNo->addIncoming(sz_ZERO, entry);
     PHINode * segProduced = b->CreatePHI(sizeTy, 2, "segProduced");
@@ -3016,12 +3016,18 @@ void SegmentFilter::generateMultiBlockLogic(BuilderRef b, Value * const numOfStr
     Value * nextStrideNo = b->CreateAdd(strideNo, sz_ONE);
 
     Value * const segIdx = b->CreateAdd(strideNo, segProcessed, "segIdx");
+    b->CreateCondBr(b->CreateICmpEQ(segIdx, segAvail), segmentsDone, processSegment);
+
+    b->SetInsertPoint(processSegment);
     // b->CallPrintInt("segIdx", segIdx);
     Value * segBase = b->CreateSub(segIdx, b->CreateURem(segIdx, b->getSize(8))); // does segBase start from 0?
     Value * matchesBasePtr = b->CreateBitCast(b->getRawInputPointer("MatchesBySegment", segBase), sizeTy->getPointerTo());
     Value * matches = b->CreateAlignedLoad(matchesBasePtr, 1);
     Value * copySeg = b->CreateAnd(matches, b->CreateShl(sz_ONE, b->getScalarField("bitIdx")));
     // b->CallPrintInt("segIdx", segIdx);
+    // b->CallPrintInt("segBase", segBase);
+    // b->CallPrintInt("bitIdx", b->getScalarField("bitIdx"));
+    // b->CallPrintInt("b->CreateShl(sz_ONE, b->getScalarField(bitIdx))", b->CreateShl(sz_ONE, b->getScalarField("bitIdx")));
     // b->CallPrintInt("matches", matches);
     // b->CallPrintInt("copySeg", copySeg);
     // b->CallPrintInt("segProduced", segProduced);
@@ -3060,6 +3066,7 @@ void SegmentFilter::generateMultiBlockLogic(BuilderRef b, Value * const numOfStr
     PHINode * const strideProduced = b->CreatePHI(sizeTy, 2, "strideProduced");
     strideProduced->addIncoming(nextWritePos, filterSeg);
     strideProduced->addIncoming(nextWritePosAfterDict, filterDict);
+    strideProduced->addIncoming(segProduced, startSegment);
 
     segProduced->addIncoming(strideProduced, segmentsDone);
     strideNo->addIncoming(nextStrideNo, segmentsDone);
@@ -3067,13 +3074,14 @@ void SegmentFilter::generateMultiBlockLogic(BuilderRef b, Value * const numOfStr
     PHINode * const processed = b->CreatePHI(sizeTy, 2, "processed");
     processed->addIncoming(segEndPos, filterSeg);
     processed->addIncoming(segEndPos, filterDict);
+    processed->addIncoming(availBytes, startSegment);
 
     // b->CallPrintInt("strideProduced", strideProduced);
     // b->CallPrintInt("b->isFinal()", b->isFinal());
 
-    b->setScalarField("bitIdx", b->CreateSelect(b->CreateICmpEQ(b->CreateURem(segIdx, b->getSize(8)), sz_ZERO), sz_ZERO, b->CreateAdd(b->getScalarField("bitIdx"), sz_ONE)));
+    b->setScalarField("bitIdx", b->CreateSelect(b->CreateICmpEQ(b->getScalarField("bitIdx"), b->getSize(7)), sz_ZERO, b->CreateAdd(b->getScalarField("bitIdx"), sz_ONE)));
     b->setScalarField("startOffset", processed);
-    b->CreateCondBr(b->CreateICmpNE(nextStrideNo, numOfStrides), processSegment, stridesDone);
+    b->CreateCondBr(b->CreateICmpNE(nextStrideNo, numOfStrides), startSegment, stridesDone);
 
     b->SetInsertPoint(stridesDone);
     // b->CallPrintInt("processed-fin", processed);

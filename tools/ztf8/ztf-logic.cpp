@@ -41,6 +41,17 @@ unsigned EncodingInfo::maxSymbolLength() const {
     return maxSoFar;
 }
 
+unsigned EncodingInfo::minSymbolLength() const {
+    unsigned minSoFar = UINT_MAX;
+    for (unsigned i = 0; i < byLength.size(); i++) {
+        if (byLength[i].lo < minSoFar) {
+            minSoFar = byLength[i].hi;
+        }
+    }
+    return minSoFar;
+}
+
+
 unsigned EncodingInfo::maxEncodingBytes() const {
     unsigned enc_bytes = 0;
     for (auto g : byLength) {
@@ -334,7 +345,6 @@ void ZTF_Symbols::generatePabloMethod() {
     pb.createAssign(pb.createExtract(getOutputStreamVar("symbolRuns"), pb.getInteger(0)), runs);
 }
 
-<<<<<<< HEAD
 void MarkSymEnds::generatePabloMethod() {
     PabloBuilder pb(getEntryScope());
     PabloAST * wordMarks = getInputStreamSet("wordMarks")[0];
@@ -498,8 +508,6 @@ void PhraseRunSeqTemp::generatePabloMethod() {
     pb.createAssign(pb.createExtract(getOutputStreamVar("phraseRunSeq"), pb.getInteger(0)), ZTF_phrases);
 }
 
-=======
->>>>>>> 48c836e0a2320cbe2e11ba3e318165f28d7232ff
 ZTF_SymbolEncoder::ZTF_SymbolEncoder(BuilderRef b,
                       EncodingInfo & encodingScheme,
                       StreamSet * const basis,
