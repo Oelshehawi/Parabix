@@ -452,7 +452,7 @@ std::vector<unsigned> getPrefixForGroupLength(EncodingInfo & encodingScheme, uns
     return prefixes;
 }
 
-ProcessCandidateMatches::ProcessCandidateMatches(BuilderRef kb,
+PostProcessCandidateMatches::PostProcessCandidateMatches(BuilderRef kb,
                 EncodingInfo & encodingScheme,
                 StreamSet * basis,
                 StreamSet * results,
@@ -463,7 +463,7 @@ ProcessCandidateMatches::ProcessCandidateMatches(BuilderRef kb,
                 StreamSet * codeWordInCipherText,
                 StreamSet * candidateMatchesInCipherText,
                 bool matchOnly)
-: PabloKernel(kb, "ProcessCandidateMatches_" + std::to_string(matchOnly),
+: PabloKernel(kb, "PostProcessCandidateMatches_" + std::to_string(matchOnly),
             {Binding{"basis", basis, FixedRate(), LookAhead(encodingScheme.maxEncodingBytes() - 1)},
              Binding{"results", results, FixedRate(), LookAhead(1)}},
             {Binding{"dictStart", dictStart, FixedRate(), Add1()},
@@ -474,7 +474,7 @@ ProcessCandidateMatches::ProcessCandidateMatches(BuilderRef kb,
              Binding{"candidateMatchesInCipherText", candidateMatchesInCipherText, FixedRate(), Add1()}}),
 mEncodingScheme(encodingScheme), mMatchOnly(matchOnly) { }
 
-void ProcessCandidateMatches::generatePabloMethod() {
+void PostProcessCandidateMatches::generatePabloMethod() {
     PabloBuilder pb(getEntryScope());
     BixNumCompiler bnc(pb);
     std::vector<PabloAST *> basis = getInputStreamSet("basis");
@@ -750,7 +750,7 @@ MatchedSegmentsKernel::MatchedSegmentsKernel (BuilderRef iBuilder,
 
 }
 
-kernel::StreamSet * kernel::ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> & P,
+kernel::StreamSet * kernel::SelectiveDecompressionLogic(const std::unique_ptr<ProgramBuilder> & P,
                                 EncodingInfo & encodingScheme,
                                 StreamSet * const Basis,
                                 StreamSet * const Results,
@@ -773,7 +773,7 @@ kernel::StreamSet * kernel::ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> 
     /// TODO: Update results to remove any invalid matches in the dictionary (all done except pfx byte)
     // Input: basis, candidateMatches
     // Output: candidateMatchCodeWordInDict, nonCandidateMatchCodeWordInDict, codeWordInCipherText
-    P->CreateKernelCall<ProcessCandidateMatches>(encodingScheme, Basis, Results, dictStart, dictEnd, candidateMatchesInDict, nonCandidateMatchesInDict, codeWordInCipherText/*all codewords in ciphertext*/, candidateMatchesInCipherText/*plaintext match of sub-expression*/, matchOnlyMode); // add 1-bit at the end of dictEnd stream
+    P->CreateKernelCall<PostProcessCandidateMatches>(encodingScheme, Basis, Results, dictStart, dictEnd, candidateMatchesInDict, nonCandidateMatchesInDict, codeWordInCipherText/*all codewords in ciphertext*/, candidateMatchesInCipherText/*plaintext match of sub-expression*/, matchOnlyMode); // add 1-bit at the end of dictEnd stream
     //Perform single scan of compressed data to finalize candidate matches
     StreamSet * const basis_bytes = P->CreateStreamSet(1, 8);
     P->CreateKernelCall<P2SKernel>(Basis, basis_bytes);

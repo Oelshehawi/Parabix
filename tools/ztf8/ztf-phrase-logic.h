@@ -135,9 +135,9 @@ protected:
     bool mFullyDecompress;
 };
 
-class ProcessCandidateMatches final: public pablo::PabloKernel {
+class PostProcessCandidateMatches final: public pablo::PabloKernel {
 public:
-    ProcessCandidateMatches(BuilderRef b,
+    PostProcessCandidateMatches(BuilderRef b,
                          EncodingInfo & encodingScheme,
                          StreamSet * const basis,
                          StreamSet * Results,
@@ -173,7 +173,7 @@ protected:
     void generatePabloMethod() override;
 };
 
-kernel::StreamSet * ZTFLinesLogic(const std::unique_ptr<ProgramBuilder> & P,
+kernel::StreamSet * SelectiveDecompressionLogic(const std::unique_ptr<ProgramBuilder> & P,
                    EncodingInfo & encodingScheme,
                    StreamSet * const Basis,
                    StreamSet * const Results,

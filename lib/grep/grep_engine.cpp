@@ -710,7 +710,7 @@ void GrepEngine::ZTFDecmpLogic(const std::unique_ptr<ProgramBuilder> & P, Stream
         P->CreateKernelCall<S2PKernel>(Source, src_bits);
         SourceBits = src_bits;
     }
-    StreamSet * const ztfHash_u8bytes = ZTFLinesLogic(P, encodingScheme1, SourceBits, Results, matchOnlyMode);
+    StreamSet * const ztfHash_u8bytes = SelectiveDecompressionLogic(P, encodingScheme1, SourceBits, Results, matchOnlyMode);
     StreamSet * const filtered_basis = P->CreateStreamSet(8);
     P->CreateKernelCall<S2PKernel>(ztfHash_u8bytes, filtered_basis);
     // Verify filtered segments
@@ -802,7 +802,7 @@ void GrepEngine::ztfGrepPipeline(const std::unique_ptr<ProgramBuilder> & P, Stre
     mCmpU8index = nullptr;
     mCmpGCB_stream = nullptr;
     mCmpWordBoundary_stream = nullptr;
-    StreamSet * PreliminaryMatches = P->CreateStreamSet(1, 1);
+    StreamSet * CandidateMatches = P->CreateStreamSet(1, 1);
     //=======================================================================================
     // ztf-grep prologue
     Scalar * const callbackObject = P->getInputScalar("callbackObject");
@@ -843,10 +843,10 @@ void GrepEngine::ztfGrepPipeline(const std::unique_ptr<ProgramBuilder> & P, Stre
     // mPropertyStreamMap to be initialized
     //=======================================================================================
     // prepareExternalStreams(P, SourceStream);
-    ZTFPreliminaryGrep(P, mSubExpression, SourceStream, PreliminaryMatches);
-    // check for PreliminaryMatches in the compressed data
+    ZTFPreliminaryGrep(P, mSubExpression, SourceStream, CandidateMatches);
+    // check for CandidateMatches in the compressed data
     StreamSet * decompressed_basis = P->CreateStreamSet(ENCODING_BITS, 1);
-    ZTFDecmpLogic(P, SourceStream, PreliminaryMatches, decompressed_basis, matchOnlyMode);
+    ZTFDecmpLogic(P, SourceStream, CandidateMatches, decompressed_basis, matchOnlyMode);
     P->CreateKernelCall<P2SKernel>(decompressed_basis, decoded_stream);
     mBinaryFilesMode = argv::Text;
 }
