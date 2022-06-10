@@ -1432,7 +1432,6 @@ void FilterCompressedData::generateMultiBlockLogic(BuilderRef b, Value * const n
     // There may be more phrases in the phrase mask.
     Value * nextphraseMask = b->CreateSelect(thisWordDone, b->CreateResetLowestBit(phraseMaskPhi), phraseMaskPhi);
     Value * const nextWritePos = b->CreateAdd(subStrideWritePos, sz_ONE);
-
     BasicBlock * currentBB = b->GetInsertBlock();
     phraseMaskPhi->addIncoming(nextphraseMask, currentBB);
     phraseWordPhi->addIncoming(dropPhrase, currentBB);

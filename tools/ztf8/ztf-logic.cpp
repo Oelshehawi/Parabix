@@ -51,7 +51,6 @@ unsigned EncodingInfo::minSymbolLength() const {
     return minSoFar;
 }
 
-
 unsigned EncodingInfo::maxEncodingBytes() const {
     unsigned enc_bytes = 0;
     for (auto g : byLength) {
@@ -612,12 +611,13 @@ LengthGroupSelector::LengthGroupSelector(BuilderRef b,
                            StreamSet * symbolRun,
                            StreamSet * const lengthBixNum,
                            StreamSet * overflow,
-                           StreamSet * selected)
+                           StreamSet * selected,
+                           unsigned offset)
 : PabloKernel(b, "LengthGroupSelector" + LengthSelectorSuffix(encodingScheme, groupNo, lengthBixNum),
               {Binding{"symbolRun", symbolRun, FixedRate(), LookAhead(1)},
                   Binding{"lengthBixNum", lengthBixNum},
                   Binding{"overflow", overflow}},
-              {Binding{"selected", selected}}), mEncodingScheme(encodingScheme), mGroupNo(groupNo) { }
+              {Binding{"selected", selected}}), mEncodingScheme(encodingScheme), mGroupNo(groupNo), mOffset(offset) { }
 
 void LengthGroupSelector::generatePabloMethod() {
     PabloBuilder pb(getEntryScope());
@@ -629,16 +629,13 @@ void LengthGroupSelector::generatePabloMethod() {
     runFinal = pb.createAnd(runFinal, pb.createNot(overflow));
     Var * groupStreamVar = getOutputStreamVar("selected");
     LengthGroupInfo groupInfo = mEncodingScheme.byLength[mGroupNo];
-    // Run index codes count from 0 on the 2nd byte of a symbol.
-    // So the length is 2 more than the bixnum.
-    unsigned offset = 2;
+    unsigned offset = mOffset;
     unsigned lo = groupInfo.lo;
     unsigned hi = groupInfo.hi;
     std::string groupName = "lengthGroup" + std::to_string(lo) +  "_" + std::to_string(hi);
     PabloAST * groupStream = pb.createAnd3(bnc.UGE(lengthBixNum, lo - offset), bnc.ULE(lengthBixNum, hi - offset), runFinal, groupName);
     pb.createAssign(pb.createExtract(groupStreamVar, pb.getInteger(0)), groupStream);
 }
-
 
 LengthSorter::LengthSorter(BuilderRef b,
                            EncodingInfo & encodingScheme,
