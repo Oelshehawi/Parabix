@@ -123,7 +123,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
     P->CreateKernelCall<StreamsIntersect>(extractionMasks, combinedMask);
     StreamSet * const ZTF_bytes = P->CreateStreamSet(1, 8);
     if(UseByteFilterByMask) {
-        FilterByMask(P, combinedMask, u8bytes, ZTF_bytes, /*streamOffset*/0, /*extractionFieldWidth*/64, true);
+        FilterByMask(P, combinedMask, u8bytes, ZTF_bytes, /*streamOffset*/0, /*extractionFieldWidth*/64);
     }
     else {
         StreamSet * const encoded = P->CreateStreamSet(8);
