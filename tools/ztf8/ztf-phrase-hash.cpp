@@ -130,7 +130,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
         // P->CreateKernelCall<RunIndexOld>(phraseRuns, runIndex, overflow);
     }
     else {
-        P->CreateKernelCall<RunIndex>(phraseRuns, runIndex, overflow, RunIndex::Kind::RunOf1, RunIndex::Numbering::RunPlus1);
+        P->CreateKernelCall<RunIndex>(phraseRuns, runIndex, overflow, RunIndex::Kind::RunOf1, true, RunIndex::Numbering::RunPlus1);
     }
     //P->CreateKernelCall<DebugDisplayKernel>("runIndex", runIndex);
 

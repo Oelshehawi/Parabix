@@ -28,12 +28,13 @@ public:
     enum class Kind {RunOf0, RunOf1};
     enum class Numbering {RunOnly, RunPlus1};
     RunIndex(BuilderRef b,
-               StreamSet * const runMarks, StreamSet * runIndex, StreamSet * overflow = nullptr, Kind k = Kind::RunOf1, Numbering n = Numbering::RunOnly);
+               StreamSet * const runMarks, StreamSet * runIndex, StreamSet * overflow = nullptr, Kind k = Kind::RunOf1, bool ztfFlag = false, Numbering n = Numbering::RunOnly);
     void generatePabloMethod() override;
 private:
     unsigned mIndexCount;
     bool mOverflow;
     Kind mRunKind;
+    bool mZtfFlag;
     Numbering mNumbering;
 };
 

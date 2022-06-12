@@ -23,7 +23,7 @@ Bindings RunIndexOutputBindings(StreamSet * runIndex, StreamSet * overflow) {
 }
     
 RunIndex::RunIndex(BuilderRef b,
-                   StreamSet * const runMarks, StreamSet * runIndex, StreamSet * overflow, Kind kind, Numbering n)
+                   StreamSet * const runMarks, StreamSet * runIndex, StreamSet * overflow, Kind kind, bool ztfFlag, Numbering n)
     : PabloKernel(b, "RunIndex-" + std::to_string(runIndex->getNumElements()) + (overflow == nullptr ? "" : "overflow") + (kind == Kind::RunOf0 ? "" : "_invert") + (n == Numbering::RunOnly ? "" : "_add1"),
            // input
 {Binding{"runMarks", runMarks, FixedRate(), LookAhead(1)}},
@@ -32,6 +32,7 @@ RunIndexOutputBindings(runIndex, overflow)),
 mIndexCount(runIndex->getNumElements()),
 mOverflow(overflow != nullptr),
 mRunKind(kind),
+mZtfFlag(ztfFlag),
 mNumbering(n) {
     assert(mIndexCount > 0);
     assert(mIndexCount <= 5);
@@ -42,33 +43,44 @@ void RunIndex::generatePabloMethod() {
     Var * runMarksVar = pb.createExtract(getInputStreamVar("runMarks"), pb.getInteger(0));
     PabloAST * runMarks = mRunKind == Kind::RunOf0 ? pb.createInFile(pb.createNot(runMarksVar)) : runMarksVar;
     PabloAST * runStart = nullptr;
-    PabloAST * overflowInit = runMarks;
-    if (mNumbering == Numbering::RunPlus1) {
-        runStart = pb.createNot(runMarks);
-        runMarks = pb.createLookahead(runMarks, 1);
+    PabloAST * selectZero = nullptr;
+    PabloAST * outputEnable = nullptr;
+    PabloAST * overflowInit = nullptr;
+    if (mZtfFlag) {
+        overflowInit = runMarks;
+        if (mNumbering == Numbering::RunPlus1) {
+            runStart = pb.createNot(runMarks);
+            runMarks = pb.createLookahead(runMarks, 1);
+        }
+        else {
+            runStart = pb.createAnd(runMarks, pb.createNot(pb.createAdvance(runMarks, 1)), "runStart");
+        }
+        /*
+                                            hello world, this is a fine morning hello world, how are you?
+                e2 22 04 10 10 a4 20 41    1.....1......1....1..1.1....1.......1.....1......1...1...1...
+
+                15 54 aa aa a5 49 4a aa    .1.1.1.1.1.1..1.1..1..1.1.1..1.1.1.1.1.1.1.1.1.1..1.1.1.1.1.1
+                19 99 30 cc c6 11 93 0c    ..11....11..1..11...1....11...11..11..11....11..1..11..11..11
+                00 01 c3 0f 08 02 1c 30    ....11....111....1.........1....1111....11....111............
+        */
+        // pb.createDebugPrint(runStart, "runStart");
+        // pb.createDebugPrint(runMarks, "runMarks");
+        selectZero = mRunKind == Kind::RunOf0 ? pb.createInFile(pb.createNot(runMarksVar)) : runMarksVar;
+        outputEnable = selectZero;
     }
     else {
         runStart = pb.createAnd(runMarks, pb.createNot(pb.createAdvance(runMarks, 1)), "runStart");
+        selectZero = runMarks;
+        outputEnable = runMarks;
     }
-    /*
-                                         hello world, this is a fine morning hello world, how are you?
-              e2 22 04 10 10 a4 20 41    1.....1......1....1..1.1....1.......1.....1......1...1...1...
-
-              15 54 aa aa a5 49 4a aa    .1.1.1.1.1.1..1.1..1..1.1.1..1.1.1.1.1.1.1.1.1.1..1.1.1.1.1.1
-              19 99 30 cc c6 11 93 0c    ..11....11..1..11...1....11...11..11..11....11..1..11..11..11
-              00 01 c3 0f 08 02 1c 30    ....11....111....1.........1....1111....11....111............
-    */
-    // pb.createDebugPrint(runStart, "runStart");
-    // pb.createDebugPrint(runMarks, "runMarks");
-    PabloAST * selectZero = mRunKind == Kind::RunOf0 ? pb.createInFile(pb.createNot(runMarksVar)) : runMarksVar;
-    PabloAST * outputEnable = selectZero;
     Var * runIndexVar = getOutputStreamVar("runIndex");
     std::vector<PabloAST *> runIndex(mIndexCount);
     PabloAST * even = nullptr;
     PabloAST * overflow = nullptr;
     if (mOverflow) {
         // marks overflowLen + 2 positions
-        overflow = overflowInit; //pb.createAnd(pb.createAdvance(runMarks, 1), runMarks);
+        if (mZtfFlag) overflow = overflowInit;
+        else overflow = pb.createAnd(pb.createAdvance(runMarks, 1), runMarks);
         //pb.createDebugPrint(overflow, "overflow-RI");
     }
     for (unsigned i = 0; i < mIndexCount; i++) {
@@ -85,9 +97,9 @@ void RunIndex::generatePabloMethod() {
         PabloAST * oddStart = pb.createAnd(odd, runStart);
         PabloAST * idx = pb.createOr(pb.createAnd(pb.createMatchStar(evenStart, runMarks), odd),
                                      pb.createAnd(pb.createMatchStar(oddStart, runMarks), even));
-        //if (mNumbering == Numbering::RunOnly) {
+        if (mNumbering == Numbering::RunOnly || mZtfFlag) {
             idx = pb.createAnd(idx, selectZero);
-        //}
+        }
         for (unsigned j = 0; j < i; j++) {
             idx = pb.createOr(idx, pb.createAdvance(idx, 1<<j));
         }
@@ -98,9 +110,8 @@ void RunIndex::generatePabloMethod() {
             outputEnable = pb.createAnd(outputEnable, pb.createAdvance(outputEnable, 1<<i), "outputEnable");
         }
         if (mOverflow) {
-            //pb.createDebugPrint(pb.createAdvance(overflow, 1<<i), "mOverflow");
             overflow = pb.createAnd(overflow, pb.createAdvance(overflow, 1<<i), "overflow");
-        } // 1<<i => 1, 2, 4, 8, 16
+        }
     }
     if (mOverflow) {
         pb.createAssign(pb.createExtract(getOutputStreamVar("overflow"), pb.getInteger(0)), overflow);
