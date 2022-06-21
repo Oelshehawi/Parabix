@@ -51,6 +51,7 @@ public:
     WordMarkKernel(BuilderRef kb, StreamSet * BasisBits, StreamSet * WordMarks, StreamSet * possibleSymStart=nullptr);
 protected:
     void generatePabloMethod() override;
+    bool mSymStart;
 };
 
 class ByteRun final: public pablo::PabloKernel {

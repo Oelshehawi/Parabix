@@ -198,8 +198,15 @@ unsigned EncodingInfo::tableSizeBits(unsigned groupNo) const {
     }
 }
 
+Bindings WordMarkKernelOutputBindings(StreamSet * WordMarks, StreamSet * possibleSymStart) {
+    if (possibleSymStart == nullptr) return {Binding{"WordMarks", WordMarks}};
+    return {Binding{"WordMarks", WordMarks}, Binding{"possibleSymStart", possibleSymStart}};
+}
+
 WordMarkKernel::WordMarkKernel(BuilderRef kb, StreamSet * BasisBits, StreamSet * WordMarks, StreamSet * possibleSymStart)
-: PabloKernel(kb, "WordMarks", {Binding{"source", BasisBits}}, {Binding{"WordMarks", WordMarks}, Binding{"possibleSymStart", possibleSymStart}}) { }
+: PabloKernel(kb, "WordMarks", {Binding{"source", BasisBits}},
+WordMarkKernelOutputBindings(WordMarks, possibleSymStart)),
+mSymStart(possibleSymStart != nullptr) { }
 
 void WordMarkKernel::generatePabloMethod() {
     pablo::PabloBuilder pb(getEntryScope());
@@ -212,7 +219,7 @@ void WordMarkKernel::generatePabloMethod() {
     unicodeCompiler.compile();
     PabloAST * candidateSymStart = pb.createAnd(wordChar, pb.createAdvance(pb.createNot(wordChar), 1));
     pb.createAssign(pb.createExtract(getOutputStreamVar("WordMarks"), pb.getInteger(0)), wordChar);
-    pb.createAssign(pb.createExtract(getOutputStreamVar("possibleSymStart"), pb.getInteger(0)), candidateSymStart);
+    if (mSymStart) pb.createAssign(pb.createExtract(getOutputStreamVar("possibleSymStart"), pb.getInteger(0)), candidateSymStart);
 
 }
 
