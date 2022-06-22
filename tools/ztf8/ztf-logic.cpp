@@ -380,7 +380,7 @@ void ZTF_Phrases::generatePabloMethod() {
     pablo::PabloAST * wordChar = getInputStreamSet("wordChar")[0];
     PabloAST * possibleSymStart = getInputStreamSet("possibleSymStart")[0];
     PabloAST * possibleSymEnd = getInputStreamSet("possibleSymEnd")[0];
-#if0 //unsed
+#if 0 //unsed
     PabloAST * removeFollowingSymStart = pb.createZeroes();
     PabloAST * removePrecedingSymStart = pb.createZeroes();
     if (mGroup == 1 || mGroup == 3) {
