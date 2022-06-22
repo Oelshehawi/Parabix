@@ -132,7 +132,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
     else {
         P->CreateKernelCall<RunIndex>(phraseRuns, runIndex, overflow, RunIndex::Kind::RunOf1, true, RunIndex::Numbering::RunPlus1);
     }
-    //P->CreateKernelCall<DebugDisplayKernel>("runIndex", runIndex);
+    // P->CreateKernelCall<DebugDisplayKernel>("runIndex", runIndex);
 
     StreamSet * const phraseRunIndex = P->CreateStreamSet(8); //7 bits are enough
     StreamSet * const phraseOverflow = P->CreateStreamSet(1);
@@ -152,7 +152,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
         P->CreateKernelCall<AccumRunIndex>(i/*sum_offset*/, phraseRuns, runIndex/*phraseLenBixnum[i-1] -> has 8 bitstreams*/, phraseLenOverflow[i-1], accumRunIndex, accumOverflow);
         phraseLenBixnum[i]= accumRunIndex;
         phraseLenOverflow[i] = accumOverflow;
-        //P->CreateKernelCall<DebugDisplayKernel>("accumRunIndex", accumRunIndex);
+        // P->CreateKernelCall<DebugDisplayKernel>("accumRunIndex", accumRunIndex);
     }
     // P->CreateKernelCall<DebugDisplayKernel>("phraseLenBixnum[0]", phraseLenBixnum[0]);
     // P->CreateKernelCall<DebugDisplayKernel>("phraseLenBixnum[1]", phraseLenBixnum[1]);
@@ -174,8 +174,8 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
         allHashValues[i] = hashValues;
     }
     // unused
-    std::vector<StreamSet *> combinedData = {bixHashes[0], phraseRunIndex};
-    P->CreateKernelCall<P2S16Kernel>(combinedData, allLenHashValues);
+    // std::vector<StreamSet *> combinedData = {bixHashes[0], phraseRunIndex};
+    // P->CreateKernelCall<P2S16Kernel>(combinedData, allLenHashValues);
 
     StreamSet * const LF = P->CreateStreamSet();
     P->CreateKernelCall<LineFeedKernelBuilder>(u8basis, LF);
@@ -211,9 +211,10 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
                 cmpMarksSoFar = combinedSymHashMarks;
                 if (i == startLgIdx) allHashMarks.push_back(cmpMarksSoFar);
             }
-            hashValues = hashValuesUpdated;
+            // disable collision handling; resolves single-threaded execution errors
+            // hashValues = hashValuesUpdated;
         }
-        allHashValues[sym] = hashValues;
+        // allHashValues[sym] = hashValues;
         if (sym == 0) {
             StreamSet * const combinedSymHashMarks = P->CreateStreamSet(1);
             P->CreateKernelCall<StreamsMerge>(symHashMarks, combinedSymHashMarks);

@@ -369,8 +369,8 @@ ZTF_Phrases::ZTF_Phrases(BuilderRef kb,
 : PabloKernel(kb, "ZTF_Phrases_"+ std::to_string(group),
             {Binding{"basisBits", basisBits, FixedRate(1), LookAhead(1)},
              Binding{"wordChar", wordChar, FixedRate(1), LookAhead(3)},
-             Binding{"possibleSymStart", possibleSymStart, FixedRate(1), LookAhead(3)},
-             Binding{"possibleSymEnd", possibleSymEnd, FixedRate(1), LookAhead(3)}},
+             Binding{"possibleSymStart", possibleSymStart, /*FixedRate(1), LookAhead(3)*/}, //unused
+             Binding{"possibleSymEnd", possibleSymEnd, /*FixedRate(1), LookAhead(3)*/}}, //unused
             {Binding{"phraseRuns", phraseRuns}}), mGroup(group) { }
 
 void ZTF_Phrases::generatePabloMethod() {
@@ -380,7 +380,7 @@ void ZTF_Phrases::generatePabloMethod() {
     pablo::PabloAST * wordChar = getInputStreamSet("wordChar")[0];
     PabloAST * possibleSymStart = getInputStreamSet("possibleSymStart")[0];
     PabloAST * possibleSymEnd = getInputStreamSet("possibleSymEnd")[0];
-
+#if0 //unsed
     PabloAST * removeFollowingSymStart = pb.createZeroes();
     PabloAST * removePrecedingSymStart = pb.createZeroes();
     if (mGroup == 1 || mGroup == 3) {
@@ -404,7 +404,7 @@ void ZTF_Phrases::generatePabloMethod() {
         }
         removeFollowingSymStart = pb.createXor(removeFollowingSymStart, finalizeMerges);
     }
-
+#endif
     // Find start bytes of word characters.
     PabloAST * ASCII = ccc.compileCC(re::makeCC(0x0, 0x7F));
     PabloAST * prefix2 = ccc.compileCC(re::makeCC(0xC2, 0xDF));
@@ -424,7 +424,6 @@ void ZTF_Phrases::generatePabloMethod() {
     PabloAST * pfx2 = ccc.compileCC(re::makeCC(0xE0, 0xEF));
     PabloAST * pfx3 = ccc.compileCC(re::makeCC(0xF0, 0xFF));
 
-    /// TODO: F8-FF can have any suffix except multi-byte pfx byte
     PabloAST * ZTF_sym = pb.createAnd(pb.createAdvance(anyPfx, 1), ASCII); // PFX 00-7F
 
     ZTF_sym = pb.createOr(ZTF_sym, pb.createAnd(pb.createAdvance(ZTF_sym, 1), multiSymSfx)); // PFX 00-7F 80-BF
@@ -448,11 +447,12 @@ void ZTF_Phrases::generatePabloMethod() {
     PabloAST * symStart = pb.createOr3(wordStart, ZTF_prefix, pb.createOr3(LF, Null, fileStart));
 
    // The next character after a ZTF symbol or a line feed also starts a new symbol.
-    symStart = pb.createOr3(symStart, pb.createAdvance(ZTF_prefix, 1), pb.createAdvance(pb.createOr(ZTF_sym, LF), 1), "symStart");
+    symStart = pb.createOr(symStart, /*pb.createAdvance(ZTF_prefix, 1),*/ pb.createAdvance(pb.createOr(ZTF_sym, LF), 1), "symStart");
 
     // runs are the bytes after a start symbol until the next symStart byte.
     pablo::PabloAST * runs = pb.createInFile(pb.createNot(symStart));
-    runs = pb.createOr3(runs, removeFollowingSymStart, removePrecedingSymStart);
+    // Not to self: fixes the memory issue in last check-in
+    // runs = pb.createOr3(runs, removeFollowingSymStart, removePrecedingSymStart);
     pb.createAssign(pb.createExtract(getOutputStreamVar("phraseRuns"), pb.getInteger(0)), runs);
 }
 
