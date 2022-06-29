@@ -130,7 +130,7 @@ void initializeOutputMasks(Kernel::BuilderRef b,
 Value * getLastLineBreakPos(Kernel::BuilderRef b,
                            ScanWordParameters & sw,
                            llvm::Constant * sz_BLOCKWIDTH,
-                           llvm::Constant * sz_BLOCKS_PER_STRIDE,
+                           llvm::Value * sz_BLOCKS_PER_STRIDE,
                            llvm::Value * strideBlockOffset,
                            llvm::BasicBlock * outputMasksReady);
 

@@ -421,36 +421,45 @@ void initializeOutputMasks(BuilderRef b,
 Value * getLastLineBreakPos(BuilderRef b,
                            ScanWordParameters & sw,
                            Constant * sz_BLOCKWIDTH,
-                           Constant * sz_BLOCKS_PER_STRIDE,
-                           Value * strideBlockOffset,
+                           Value * sz_BLOCKS_PER_STRIDE,
+                           Value * absBlockOffset,
                            BasicBlock * lbPosCalculated) {
     Constant * sz_ZERO = b->getSize(0);
     Constant * sz_ONE = b->getSize(1);
     Type * sizeTy = b->getSizeTy();
+    Type * bitBlockPtrTy = b->getBitBlockType()->getPointerTo();
     BasicBlock * const entryBlock = b->GetInsertBlock();
     BasicBlock * const maskInit = b->CreateBasicBlock("maskInit");
+
+    Value * const absoluteProcessed = b->CreateMul(absBlockOffset, sz_BLOCKWIDTH);
+    Value * const lastBlockToProcess = b->CreateAdd(absoluteProcessed, b->CreateMul(sz_BLOCKS_PER_STRIDE, sz_BLOCKWIDTH));
     b->CreateBr(maskInit);
 
     b->SetInsertPoint(maskInit);
-    PHINode * const blockNo = b->CreatePHI(sizeTy, 2);
-    PHINode * const lineBreakPos = b->CreatePHI(sizeTy, 2);
+    PHINode * const blockPos = b->CreatePHI(sizeTy, 2, "blockPos");
+    PHINode * const blockNo = b->CreatePHI(sizeTy, 2, "blockNo");
+    PHINode * const lineBreakPos = b->CreatePHI(sizeTy, 2, "lineBreakPos");
+    blockPos->addIncoming(absoluteProcessed, entryBlock);
     blockNo->addIncoming(sz_ZERO, entryBlock);
     lineBreakPos->addIncoming(sz_ZERO, entryBlock);
-    Value * strideBlockIndex = b->CreateAdd(strideBlockOffset, blockNo);
+    Value * const nextBlockPos = b->CreateAdd(blockPos, sz_BLOCKWIDTH);
     Value * const nextBlockNo = b->CreateAdd(blockNo, sz_ONE);
     Value * blockOffset = b->CreateMul(blockNo, sz_BLOCKWIDTH);
     // cases:
-    // 1. there is/are linebreaks in the bitblock -> add to lbPos the position of the last line break ([blockNo * blockSize] + lastLineBreakPosInBitblock)
+    // 1. there is/are linebreaks in the bitblock -> add to lbPos the position of the last line break ([blockPos * blockSize] + lastLineBreakPosInBitblock)
     // 2. No linebreaks in the bitblock -> add blockSize to lbPos
-    Value * lineBitBlock = b->loadInputStreamBlock("lineBreaks", sz_ZERO, strideBlockIndex);
+
+    Value * lineBitBlockPtr = b->CreateBitCast(b->getRawInputPointer("lineBreaks", blockPos), bitBlockPtrTy);
+    Value * lineBitBlock = b->CreateBlockAlignedLoad(lineBitBlockPtr);
     Value * const lastLB = b->simd_ctlz(b->getBitBlockWidth(), lineBitBlock);
     Value * lbPos = b->CreateZExtOrTrunc(b->CreateExtractElement(b->fwCast(16, lastLB), b->getInt32(0)), sizeTy);
     // b->CallPrintInt("lbPos", lbPos);
     // update lineBreakPos only when a new linebreak is seen in the bitblock
     Value * newLinebreakPos = b->CreateSelect(b->CreateICmpEQ(lbPos, sz_BLOCKWIDTH), lineBreakPos, b->CreateAdd(blockOffset, b->CreateSub(sz_BLOCKWIDTH, lbPos)));
     lineBreakPos->addIncoming(newLinebreakPos, maskInit);
+    blockPos->addIncoming(nextBlockPos, maskInit);
     blockNo->addIncoming(nextBlockNo, maskInit);
-    b->CreateCondBr(b->CreateICmpNE(nextBlockNo, sz_BLOCKS_PER_STRIDE), maskInit, lbPosCalculated);
+    b->CreateCondBr(b->CreateICmpNE(nextBlockPos, lastBlockToProcess), maskInit, lbPosCalculated);
     return newLinebreakPos;
 }
 
