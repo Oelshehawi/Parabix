@@ -189,7 +189,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
     StreamSet * cmpMarksSoFar = symEnd;
     for (unsigned sym = 0; sym < SymCount; sym++) {
         int startLgIdx = 0;
-        int endIdx = encodingScheme1.byLength.size();
+        int endIdx = encodingScheme1.byLength.size() - 1;
         if (sym > 0) {
             startLgIdx = 3;
             if (encodingScheme1.byLength.size() == 4) {
@@ -198,7 +198,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
         }
         std::vector<StreamSet *> symHashMarks;
         StreamSet * hashValues = allHashValues[sym];
-        for (int i = endIdx-1; i >= startLgIdx; i--) { // k-sym phrases length range 5-32
+        for (int i = endIdx; i >= startLgIdx; i--) { // k-sym phrases length range 5-32
             StreamSet * const groupMarks = P->CreateStreamSet(1);
             P->CreateKernelCall<LengthGroupSelector>(encodingScheme1, i, phraseRuns, phraseLenBixnum[sym], phraseLenOverflow[sym]/*overflow*/, groupMarks, PhraseLenOffset);
             StreamSet * const hashMarks = P->CreateStreamSet(1);
@@ -242,7 +242,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
             StreamSet * const codewordMask = P->CreateStreamSet(1);
             P->CreateKernelCall<LengthGroupSelector>(encodingScheme1, i, allHashMarks[sym], phraseLenBixnum[sym], /*phraseLenOverflow[sym]*/ overflow, groupMarks, PhraseLenOffset);
             // mask of dictionary codeword positions
-            P->CreateKernelCall<SymbolGroupCompression>(PhraseLen, encodingScheme1, sym, i, PhraseLenOffset, groupMarks, allHashValues[sym], input_bytes, extractionMask, output_bytes, codewordMask);
+            P->CreateKernelCall<SymbolGroupCompression>(PhraseLen, encodingScheme1, sym, i, PhraseLenOffset, LFpartialSum, groupMarks, allHashValues[sym], input_bytes, extractionMask, output_bytes, codewordMask);
             extractionMasks.push_back(extractionMask);
             phraseMasks.push_back(codewordMask);
             u8bytes = output_bytes;
@@ -264,7 +264,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
 
     StreamSet * const dict_bytes = P->CreateStreamSet(1, 8);
     StreamSet * const dict_partialSum = P->CreateStreamSet(1, 64);
-    P->CreateKernelCall<WriteDictionary>(PhraseLen, encodingScheme1, SymCount, PhraseLenOffset, codeUnitStream, u8bytes, combinedPhraseMask, phraseLenBytes, dict_bytes, dict_partialSum);
+    P->CreateKernelCall<WriteDictionary>(PhraseLen, encodingScheme1, SymCount, PhraseLenOffset, LFpartialSum, codeUnitStream, u8bytes, combinedPhraseMask, phraseLenBytes, dict_bytes, dict_partialSum);
     // P->CreateKernelCall<DebugDisplayKernel>("dict_partialSum", dict_partialSum);
 
     // Scalar * dictFileName = P->getInputScalar("dictFileName");

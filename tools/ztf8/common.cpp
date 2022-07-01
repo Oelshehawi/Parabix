@@ -180,16 +180,20 @@ std::vector<Value *> initializeCompressionMasks(BuilderRef b,
                                                 ScanWordParameters & sw,
                                                 Constant * sz_BLOCKS_PER_STRIDE,
                                                 unsigned maskCount,
-                                                Value * strideBlockOffset,
+                                                Value * absBlockOffset,
                                                 Value * compressMaskPtr,
                                                 Value * phraseMaskPtr,
                                                 BasicBlock * strideMasksReady) {
     Constant * sz_ZERO = b->getSize(0);
     Constant * sz_ONE = b->getSize(1);
+    Constant * sz_BLOCKWIDTH = b->getSize(b->getBitBlockWidth());
     Type * sizeTy = b->getSizeTy();
+    Type * bitBlockPtrTy = b->getBitBlockType()->getPointerTo();
     std::vector<Value *> keyMasks(maskCount);
     BasicBlock * const entryBlock = b->GetInsertBlock();
     BasicBlock * const maskInitialization = b->CreateBasicBlock("maskInitialization");
+    Value * const absoluteProcessed = b->CreateMul(absBlockOffset, sz_BLOCKWIDTH);
+    Value * const lastBlockToProcess = b->CreateAdd(absoluteProcessed, b->CreateMul(sz_BLOCKS_PER_STRIDE, sz_BLOCKWIDTH));
     b->CreateBr(maskInitialization);
     b->SetInsertPoint(maskInitialization);
     std::vector<PHINode *> keyMaskAccum(maskCount);
@@ -199,9 +203,11 @@ std::vector<Value *> initializeCompressionMasks(BuilderRef b,
     }
     PHINode * const blockNo = b->CreatePHI(sizeTy, 2);
     blockNo->addIncoming(sz_ZERO, entryBlock);
-    Value * strideBlockIndex = b->CreateAdd(strideBlockOffset, blockNo);
+    PHINode * const blockPos = b->CreatePHI(sizeTy, 2, "blockPos");
+    blockPos->addIncoming(absoluteProcessed, entryBlock);
     for (unsigned i = 0; i < maskCount; i++) {
-        Value * keyBitBlock = b->loadInputStreamBlock("symbolMarks" + (i > 0 ? std::to_string(i) : ""), sz_ZERO, strideBlockIndex);
+        Value * keyBitBlockPtr = b->CreateBitCast(b->getRawInputPointer("symbolMarks" + (i > 0 ? std::to_string(i) : ""), blockPos), bitBlockPtrTy);
+        Value * keyBitBlock = b->CreateBlockAlignedLoad(keyBitBlockPtr);
         Value * const anyKey = b->simd_any(sw.width, keyBitBlock);
         Value * keyWordMask = b->CreateZExtOrTrunc(b->hsimd_signmask(sw.width, anyKey), sizeTy);
         //b->CallPrintRegister("keyBitBlock", keyBitBlock);
@@ -214,13 +220,17 @@ std::vector<Value *> initializeCompressionMasks(BuilderRef b,
     }
     // Initialize the compression mask.
     // Default initial compression mask is all ones (no zeroes => no compression).
-    b->CreateBlockAlignedStore(b->allOnes(), b->CreateGEP(compressMaskPtr, strideBlockIndex));
-    b->CreateBlockAlignedStore(b->allZeroes(), b->CreateGEP(phraseMaskPtr, strideBlockIndex));
+    Value * compressMaskCurPtr = b->CreateBitCast(b->getRawOutputPointer("compressionMask", blockPos), bitBlockPtrTy);
+    Value * phraseMaskCurPtr = b->CreateBitCast(b->getRawOutputPointer("codewordMask", blockPos), bitBlockPtrTy);
+    b->CreateBlockAlignedStore(b->allOnes(), compressMaskCurPtr);
+    b->CreateBlockAlignedStore(b->allZeroes(), phraseMaskCurPtr);
 
     Value * const nextBlockNo = b->CreateAdd(blockNo, sz_ONE);
+    Value * const nextBlockPos = b->CreateAdd(blockPos, sz_BLOCKWIDTH);
     blockNo->addIncoming(nextBlockNo, maskInitialization);
+    blockPos->addIncoming(nextBlockPos, maskInitialization);
     // Default initial compression mask is all ones (no zeroes => no compression).
-    b->CreateCondBr(b->CreateICmpNE(nextBlockNo, sz_BLOCKS_PER_STRIDE), maskInitialization, strideMasksReady);
+    b->CreateCondBr(b->CreateICmpNE(nextBlockPos, lastBlockToProcess), maskInitialization, strideMasksReady);
     return keyMasks;
 }
 
@@ -228,14 +238,18 @@ std::vector<Value *> initializeCompressionMasks1(BuilderRef b,
                                                 ScanWordParameters & sw,
                                                 Constant * sz_BLOCKS_PER_STRIDE,
                                                 unsigned maskCount,
-                                                Value * readSubStrideBlockOffset,
+                                                Value * absBlockOffset,
                                                 BasicBlock * strideMasksReady) {
     Constant * sz_ZERO = b->getSize(0);
     Constant * sz_ONE = b->getSize(1);
+    Constant * sz_BLOCKWIDTH = b->getSize(b->getBitBlockWidth());
     Type * sizeTy = b->getSizeTy();
+    Type * bitBlockPtrTy = b->getBitBlockType()->getPointerTo();
     std::vector<Value *> keyMasks(maskCount);
     BasicBlock * const entryBlock = b->GetInsertBlock();
     BasicBlock * const maskInitialization = b->CreateBasicBlock("maskInitialization");
+    Value * const absoluteProcessed = b->CreateMul(absBlockOffset, sz_BLOCKWIDTH);
+    Value * const lastBlockToProcess = b->CreateAdd(absoluteProcessed, b->CreateMul(sz_BLOCKS_PER_STRIDE, sz_BLOCKWIDTH));
     b->CreateBr(maskInitialization);
     b->SetInsertPoint(maskInitialization);
     std::vector<PHINode *> keyMaskAccum(maskCount);
@@ -245,9 +259,11 @@ std::vector<Value *> initializeCompressionMasks1(BuilderRef b,
     }
     PHINode * const blockNo = b->CreatePHI(sizeTy, 2);
     blockNo->addIncoming(sz_ZERO, entryBlock);
-    Value * readStrideBlockIndex = b->CreateAdd(readSubStrideBlockOffset, blockNo);
+    PHINode * const blockPos = b->CreatePHI(sizeTy, 2, "blockPos");
+    blockPos->addIncoming(absoluteProcessed, entryBlock);
     for (unsigned i = 0; i < maskCount; i++) {
-        Value * keyBitBlock = b->loadInputStreamBlock("phraseMask" + (i > 0 ? std::to_string(i) : ""), sz_ZERO, readStrideBlockIndex);
+        Value * keyBitBlockPtr = b->CreateBitCast(b->getRawInputPointer("phraseMask" + (i > 0 ? std::to_string(i) : ""), blockPos), bitBlockPtrTy);
+        Value * keyBitBlock = b->CreateBlockAlignedLoad(keyBitBlockPtr);
         Value * const anyKey = b->simd_any(sw.width, keyBitBlock);
         Value * keyWordMask = b->CreateZExtOrTrunc(b->hsimd_signmask(sw.width, anyKey), sizeTy);
         // number of symbols in a block at 64 bit boundaries
@@ -255,8 +271,10 @@ std::vector<Value *> initializeCompressionMasks1(BuilderRef b,
         keyMaskAccum[i]->addIncoming(keyMasks[i], maskInitialization);
     }
     Value * const nextBlockNo = b->CreateAdd(blockNo, sz_ONE);
+    Value * const nextBlockPos = b->CreateAdd(blockPos, sz_BLOCKWIDTH);
     blockNo->addIncoming(nextBlockNo, maskInitialization);
-    b->CreateCondBr(b->CreateICmpNE(nextBlockNo, sz_BLOCKS_PER_STRIDE), maskInitialization, strideMasksReady);
+    blockPos->addIncoming(nextBlockPos, maskInitialization);
+    b->CreateCondBr(b->CreateICmpNE(nextBlockPos, lastBlockToProcess), maskInitialization, strideMasksReady);
     return keyMasks;
 }
 
@@ -264,15 +282,23 @@ std::vector<Value *> initializeCompressionMasks2(BuilderRef b,
                                                 ScanWordParameters & sw,
                                                 Constant * sz_BLOCKS_PER_STRIDE,
                                                 unsigned maskCount,
-                                                Value * strideBlockOffset,
+                                                Value * absBlockOffset,
                                                 Value * dictMaskPtr,
                                                 BasicBlock * strideMasksReady) {
     Constant * sz_ZERO = b->getSize(0);
     Constant * sz_ONE = b->getSize(1);
+    Constant * sz_BLOCKWIDTH = b->getSize(b->getBitBlockWidth());
     Type * sizeTy = b->getSizeTy();
+    Type * bitBlockPtrTy = b->getBitBlockType()->getPointerTo();
     std::vector<Value *> keyMasks(maskCount);
     BasicBlock * const entryBlock = b->GetInsertBlock();
     BasicBlock * const maskInit = b->CreateBasicBlock("maskInit");
+
+    Value * const absoluteProcessed = b->CreateMul(absBlockOffset, sz_BLOCKWIDTH);
+    // b->CallPrintInt("absoluteProcessed", absoluteProcessed);
+    Value * const lastBlockToProcess = b->CreateAdd(absoluteProcessed, b->CreateMul(sz_BLOCKS_PER_STRIDE, sz_BLOCKWIDTH));
+    // b->CallPrintInt("lastBlockToProcess", lastBlockToProcess);
+
     b->CreateBr(maskInit);
     b->SetInsertPoint(maskInit);
     std::vector<PHINode *> keyMaskAccum(maskCount);
@@ -282,19 +308,25 @@ std::vector<Value *> initializeCompressionMasks2(BuilderRef b,
     }
     PHINode * const blockNo = b->CreatePHI(sizeTy, 2);
     blockNo->addIncoming(sz_ZERO, entryBlock);
-    Value * strideBlockIndex = b->CreateAdd(strideBlockOffset, blockNo);
+    PHINode * const blockPos = b->CreatePHI(sizeTy, 2, "blockPos");
+    blockPos->addIncoming(absoluteProcessed, entryBlock);
+
     for (unsigned i = 0; i < maskCount; i++) {
-        Value * keyBitBlock = b->loadInputStreamBlock("symEndMarks" + (i > 0 ? std::to_string(i) : ""), sz_ZERO, strideBlockIndex);
+        Value * keyBitBlockPtr = b->CreateBitCast(b->getRawInputPointer("symEndMarks" + (i > 0 ? std::to_string(i) : ""), blockPos), bitBlockPtrTy);
+        Value * keyBitBlock = b->CreateBlockAlignedLoad(keyBitBlockPtr);
         Value * const anyKey = b->simd_any(sw.width, keyBitBlock);
         Value * keyWordMask = b->CreateZExtOrTrunc(b->hsimd_signmask(sw.width, anyKey), sizeTy);
         // number of symbols in a block at 64 bit boundaries
         keyMasks[i] = b->CreateOr(keyMaskAccum[i], b->CreateShl(keyWordMask, b->CreateMul(blockNo, sw.WORDS_PER_BLOCK)));
         keyMaskAccum[i]->addIncoming(keyMasks[i], maskInit);
     }
-    b->CreateBlockAlignedStore(b->allZeroes(), b->CreateGEP(dictMaskPtr, strideBlockIndex));
+    Value * dictMaskCurPtr = b->CreateBitCast(b->getRawOutputPointer("hashMarks", blockPos), bitBlockPtrTy);
+    b->CreateBlockAlignedStore(b->allZeroes(), dictMaskCurPtr);
     Value * const nextBlockNo = b->CreateAdd(blockNo, sz_ONE);
+    Value * const nextBlockPos = b->CreateAdd(blockPos, sz_BLOCKWIDTH);
     blockNo->addIncoming(nextBlockNo, maskInit);
-    b->CreateCondBr(b->CreateICmpNE(nextBlockNo, sz_BLOCKS_PER_STRIDE), maskInit, strideMasksReady);
+    blockPos->addIncoming(nextBlockPos, maskInit);
+    b->CreateCondBr(b->CreateICmpNE(nextBlockPos, lastBlockToProcess), maskInit, strideMasksReady);
     return keyMasks;
 }
 
