@@ -134,6 +134,14 @@ Value * getLastLineBreakPos(Kernel::BuilderRef b,
                            llvm::Value * strideBlockOffset,
                            llvm::BasicBlock * outputMasksReady);
 
+void initializeLinebreakMasks(Kernel::BuilderRef b,
+                                  ScanWordParameters & sw,
+                                  llvm::Constant * sz_BLOCKS_PER_STRIDE,
+                                  unsigned maskCount,
+                                  llvm::Value * strideBlockOffset,
+                                  std::vector<Value *> & keyMasks,
+                                  llvm::BasicBlock * strideMasksReady);
+
 Value * getSegBoundaryPos(Kernel::BuilderRef b,
                            ScanWordParameters & sw,
                            llvm::Constant * sz_BLOCKWIDTH,

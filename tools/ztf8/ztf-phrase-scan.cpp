@@ -1191,17 +1191,30 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
 ---> add processedSubBlockSizePhi to the lf position calculated in current stride (nextByteDataProcessed)
 * set the processed items (multiple of block size) of lineBreaks
 */
+
+/*
+Try 2:
+* process 1 page of data per stride.
+* get mask of line segBreaks
+* check the position of each line break (LB_s) in stride
+* store LB_s in lastSeenLbScalar
+* if (LB_s - lastSegLbPos) > 1048576,
+* write lastSeenLbScalar in the output LFpartialSum
+* set lastSegLbPos to lastSeenLbScalar
+* update scalar index = index+1
+*/
 OffsetCalcKernel::OffsetCalcKernel(BuilderRef b,
                                 StreamSet * LF,
                                 StreamSet * LFpartialSum,
                                 unsigned strideBlocks)
 : MultiBlockKernel(b, "OffsetCalcKernel" +  std::to_string(strideBlocks),
-                   {Binding{"lineBreaks", LF, FixedRate(1), LookBehind(1048576)}},
+                   {Binding{"lineBreaks", LF, FixedRate()}},
                    {}, {}, {},{}) {
-    mOutputStreamSets.emplace_back("LFpartialSum", LFpartialSum, BoundedRate(0, ceiling(ProcessingRate::Rational{1, 1048576})));
+    mOutputStreamSets.emplace_back("LFpartialSum", LFpartialSum, BoundedRate(0, 1), Add1());
     addInternalScalar(b->getSizeTy(), "index");
-    addInternalScalar(b->getSizeTy(), "processedBlocks");
-    setStride(1048576);
+    addInternalScalar(b->getSizeTy(), "lastStrideLbPos");
+    addInternalScalar(b->getSizeTy(), "lastSegLbPos");
+    setStride(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS));
 }
 void OffsetCalcKernel::generateMultiBlockLogic(BuilderRef b, Value * const numOfStrides) {
     ScanWordParameters sw(b, mStride);
@@ -1210,60 +1223,88 @@ void OffsetCalcKernel::generateMultiBlockLogic(BuilderRef b, Value * const numOf
     Constant * sz_BLOCKS_PER_STRIDE = b->getSize(mStride/b->getBitBlockWidth());
     Constant * sz_ZERO = b->getSize(0);
     Constant * sz_ONE = b->getSize(1);
+    Constant * sz_SEGSIZE = b->getSize(1048576);
     Type * sizeTy = b->getSizeTy();
 
     BasicBlock * const entryBlock = b->GetInsertBlock();
     BasicBlock * const stridePrologue = b->CreateBasicBlock("stridePrologue");
+    BasicBlock * const strideMasksReady = b->CreateBasicBlock("strideMasksReady");
+    BasicBlock * const lbProcessingLoop = b->CreateBasicBlock("lbProcessingLoop");
+    BasicBlock * const writeOutput = b->CreateBasicBlock("writeOutput");
+    BasicBlock * const nextLb = b->CreateBasicBlock("nextLb");
+    BasicBlock * const LbDone = b->CreateBasicBlock("LbDone");
     BasicBlock * const stridesDone = b->CreateBasicBlock("stridesDone");
-    BasicBlock * const endPosReady = b->CreateBasicBlock("endPosReady");
+    BasicBlock * const writePending = b->CreateBasicBlock("writePending");
+    BasicBlock * const lbCalcDone = b->CreateBasicBlock("lbCalcDone");
 
-    Value * const initialProcessedLines = b->getProcessedItemCount("lineBreaks");
+    Value * const initialPos = b->getProcessedItemCount("lineBreaks");
     Value * const avail = b->getAvailableItemCount("lineBreaks");
-    Value * const blkProcessed = b->getScalarField("processedBlocks");
-    // b->CallPrintInt("initialProcessedLines", initialProcessedLines);
-    // b->CallPrintInt("avail", avail);
     b->CreateBr(stridePrologue);
 
     b->SetInsertPoint(stridePrologue);
     PHINode * const strideNo = b->CreatePHI(sizeTy, 2, "strideNo");
     strideNo->addIncoming(sz_ZERO, entryBlock);
-    PHINode * const blockOffsetPhi = b->CreatePHI(sizeTy, 2, "blockOffsetPhi");
-    blockOffsetPhi->addIncoming(blkProcessed, entryBlock);
-    PHINode * const processedSubBlockSizePhi = b->CreatePHI(sizeTy, 2, "processedSubBlockSizePhi");
-    processedSubBlockSizePhi->addIncoming(sz_ZERO, entryBlock);
     Value * nextStrideNo = b->CreateAdd(strideNo, sz_ONE);
+    Value * stridePos = b->CreateAdd(initialPos, b->CreateMul(strideNo, sz_STRIDE));
+    Value * strideBlockOffset = b->CreateMul(strideNo, sz_BLOCKS_PER_STRIDE);
+    std::vector<Value *> lbMasks(1);
+    initializeLinebreakMasks(b, sw, sz_BLOCKS_PER_STRIDE, 1, strideBlockOffset, lbMasks, strideMasksReady);
+    Value * lbMask = lbMasks[0];
+    b->SetInsertPoint(strideMasksReady);
 
-    Value * const processedItems = b->CreateMul(blockOffsetPhi, sz_BLOCKWIDTH);
-    // b->CallPrintInt("blockOffsetPhi", blockOffsetPhi);
-    // sz_BLOCKS_PER_STRIDE -> uses 1 less than sz_BLOCKS_PER_STRIDE for subsequent strides
-    Value * blocksPerStride = b->CreateSelect(b->CreateICmpUGT(b->CreateAdd(processedItems, initialProcessedLines), sz_ZERO), b->CreateSub(sz_BLOCKS_PER_STRIDE, sz_ONE), sz_BLOCKS_PER_STRIDE);
-    Value * lastLbPosInStride = getLastLineBreakPos(b, sw, sz_BLOCKWIDTH, blocksPerStride, blockOffsetPhi, endPosReady);
+    Value * lbWordBasePtr = b->getInputStreamBlockPtr("lineBreaks", sz_ZERO, strideBlockOffset);
+    lbWordBasePtr = b->CreateBitCast(lbWordBasePtr, sw.pointerTy);
+    b->CreateUnlikelyCondBr(b->CreateICmpEQ(lbMask, sz_ZERO), LbDone, lbProcessingLoop);
 
-    b->SetInsertPoint(endPosReady);
-    // b->CallPrintInt("lastLbPosInStride", lastLbPosInStride);
-    Value * prsdSubBlockSize = b->CreateURem(lastLbPosInStride, sz_BLOCKWIDTH);
-    prsdSubBlockSize = b->CreateSub(sz_BLOCKWIDTH, prsdSubBlockSize); // partially processed block size
+    b->SetInsertPoint(lbProcessingLoop);
+    PHINode * const keyMaskPhi = b->CreatePHI(sizeTy, 2);
+    keyMaskPhi->addIncoming(lbMask, strideMasksReady);
+    PHINode * const keyWordPhi = b->CreatePHI(sizeTy, 2);
+    keyWordPhi->addIncoming(sz_ZERO, strideMasksReady);
 
-    lastLbPosInStride = b->CreateSelect(b->CreateICmpEQ(lastLbPosInStride, sz_ZERO), lastLbPosInStride, b->CreateSub(lastLbPosInStride, sz_ONE));
-    Value * const nextByteDataProcessed = b->CreateAdd(processedSubBlockSizePhi, b->CreateAdd(processedItems, lastLbPosInStride));
+    Value * keyWordIdx = b->CreateCountForwardZeroes(keyMaskPhi, "keyWordIdx");
+    Value * nextKeyWord = b->CreateZExtOrTrunc(b->CreateLoad(b->CreateGEP(lbWordBasePtr, keyWordIdx)), sizeTy);
+    Value * theKeyWord = b->CreateSelect(b->CreateICmpEQ(keyWordPhi, sz_ZERO), nextKeyWord, keyWordPhi);
+    Value * keyWordPos = b->CreateAdd(stridePos, b->CreateMul(keyWordIdx, sw.WIDTH));
+    Value * keyMarkPosInWord = b->CreateCountForwardZeroes(theKeyWord);
+    Value * lbPos = b->CreateAdd(keyWordPos, keyMarkPosInWord, "lbPos");
 
-    Value * nextBlockOffsetPhi = b->CreateUDiv(b->CreateAdd(prsdSubBlockSize, lastLbPosInStride), sz_BLOCKWIDTH);
-    nextBlockOffsetPhi = b->CreateAdd(blockOffsetPhi, nextBlockOffsetPhi);
+    Value * segLbPos = b->CreateSub(lbPos, b->getScalarField("lastSegLbPos"));
+    b->CreateCondBr(b->CreateICmpUGT(segLbPos, sz_SEGSIZE), writeOutput, nextLb);
 
-    b->CreateStore(b->CreateTrunc(b->CreateSelect(b->isFinal(), avail, nextByteDataProcessed), b->getInt64Ty()), b->getRawOutputPointer("LFpartialSum", b->getScalarField("index")));
+    b->SetInsertPoint(writeOutput);
+    Value * const segLbPosFinal = b->getScalarField("lastStrideLbPos");
+    b->CreateStore(b->CreateTrunc(b->CreateSelect(b->isFinal(), avail, segLbPosFinal), b->getInt64Ty()), b->getRawOutputPointer("LFpartialSum", b->getScalarField("index")));
     b->setScalarField("index", b->CreateAdd(sz_ONE, b->getScalarField("index")));
-    strideNo->addIncoming(nextStrideNo, endPosReady);
-    blockOffsetPhi->addIncoming(nextBlockOffsetPhi, endPosReady);
-    processedSubBlockSizePhi->addIncoming(prsdSubBlockSize, endPosReady);
+    b->setScalarField("lastSegLbPos", segLbPosFinal);
+
+    b->CreateBr(nextLb);
+
+    b->SetInsertPoint(nextLb);
+    b->setScalarField("lastStrideLbPos", lbPos);
+    Value * dropKey = b->CreateResetLowestBit(theKeyWord);
+    Value * thisWordDone = b->CreateICmpEQ(dropKey, sz_ZERO);
+    Value * nextKeyMask = b->CreateSelect(thisWordDone, b->CreateResetLowestBit(keyMaskPhi), keyMaskPhi);
+    BasicBlock * currentBB = b->GetInsertBlock();
+    keyMaskPhi->addIncoming(nextKeyMask, currentBB);
+    keyWordPhi->addIncoming(dropKey, currentBB);
+    b->CreateCondBr(b->CreateICmpNE(nextKeyMask, sz_ZERO), lbProcessingLoop, LbDone);
+
+    b->SetInsertPoint(LbDone);
+    strideNo->addIncoming(nextStrideNo, LbDone);
     b->CreateCondBr(b->CreateICmpNE(nextStrideNo, numOfStrides), stridePrologue, stridesDone);
 
     b->SetInsertPoint(stridesDone);
-    Value * processed = b->CreateAdd(processedItems, b->CreateAdd(prsdSubBlockSize, b->CreateAdd(lastLbPosInStride, sz_ONE)));
-    b->setProcessedItemCount("lineBreaks", b->CreateSelect(b->isFinal(), avail, processed));
+    b->CreateCondBr(b->isFinal(), writePending, lbCalcDone);
+
+    b->SetInsertPoint(writePending);
+    b->CreateStore(b->CreateTrunc(avail, b->getInt64Ty()), b->getRawOutputPointer("LFpartialSum", b->getScalarField("index")));
+    // part of next segment's first block is already marked as processed. The prsdSubBlockSize will be added to the next segment's last LB offset
+    b->setScalarField("index", b->CreateAdd(sz_ONE, b->getScalarField("index")));
+    b->CreateBr(lbCalcDone);
+
+    b->SetInsertPoint(lbCalcDone);
     b->setProducedItemCount("LFpartialSum", b->getScalarField("index"));
-    b->setScalarField("processedBlocks", nextBlockOffsetPhi);
-    // b->CallPrintInt("lineBreaks-processed", processed);
-    // b->CallPrintInt("index", b->getScalarField("index"));
 }
 
 FilterCompressedData::FilterCompressedData(BuilderRef b,
