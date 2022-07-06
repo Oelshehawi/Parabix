@@ -79,6 +79,7 @@ private:
     const unsigned mNumSym;
     const unsigned mSubStride;
     const unsigned mOffset;
+    const unsigned mStrideSize;
 };
 
 class FilterCompressedData final : public MultiBlockKernel {
@@ -118,6 +119,7 @@ private:
     const EncodingInfo mEncodingScheme;
     const unsigned mNumSym;
     const unsigned mSubStride;
+    const unsigned mStrideSize;
 };
 
 class InterleaveCompressionSegment final : public MultiBlockKernel {
