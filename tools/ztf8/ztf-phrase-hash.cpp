@@ -272,9 +272,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
 
     StreamSet * const compressed_bytes = P->CreateStreamSet(1, 8);
     StreamSet * const partialSum = P->CreateStreamSet(1, 64);
-    StreamSet * const phraseEndMarks = P->CreateStreamSet(1);
-    P->CreateKernelCall<InverseStream>(phraseRuns, phraseEndMarks);
-    P->CreateKernelCall<FilterCompressedData>(encodingScheme1, SymCount, u8bytes, combinedMask, phraseEndMarks, compressed_bytes, partialSum);
+    P->CreateKernelCall<FilterCompressedData>(encodingScheme1, SymCount, LFpartialSum, u8bytes, combinedMask, compressed_bytes, partialSum);
     // P->CreateKernelCall<DebugDisplayKernel>("partialSum", partialSum);
     // P->CreateKernelCall<StdOutKernel>(compressed_bytes);
 

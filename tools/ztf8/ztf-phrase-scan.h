@@ -86,15 +86,16 @@ public:
     FilterCompressedData(BuilderRef b,
                     EncodingInfo encodingScheme,
                     unsigned numSyms,
+                    StreamSet * lfData,
                     StreamSet * byteData,
                     StreamSet * combinedMask,
-                    StreamSet * phraseEndMarks,
                     StreamSet * cmpBytes,
                     StreamSet * partialSum,
                     unsigned strideBlocks = 8);
 private:
     void generateMultiBlockLogic(BuilderRef iBuilder, llvm::Value * const numOfStrides) override;
     const unsigned mSubStride;
+    const unsigned mStrideSize;
 };
 
 class WriteDictionary final : public MultiBlockKernel {

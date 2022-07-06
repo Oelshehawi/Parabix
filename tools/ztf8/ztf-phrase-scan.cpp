@@ -1310,55 +1310,50 @@ void OffsetCalcKernel::generateMultiBlockLogic(BuilderRef b, Value * const numOf
 FilterCompressedData::FilterCompressedData(BuilderRef b,
                                 EncodingInfo encodingScheme,
                                 unsigned numSyms,
+                                StreamSet * lfData,
                                 StreamSet * byteData,
                                 StreamSet * combinedMask,
-                                StreamSet * symEndMarker,
                                 StreamSet * cmpBytes,
                                 StreamSet * partialSum,
                                 unsigned strideBlocks)
 : MultiBlockKernel(b, "FilterCompressedData" +  std::to_string(strideBlocks) + "_" + std::to_string(numSyms),
-                   {Binding{"phraseMask", combinedMask},
-                    Binding{"symEndMarker", symEndMarker},
-                    Binding{"byteData", byteData, FixedRate(), LookBehind(33)}},
-                   {}, {}, {},{}),
-mSubStride(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS)) {
-    mOutputStreamSets.emplace_back("cmpBytes", cmpBytes, BoundedRate(0, 1)/*PopcountOf("phraseMask")*/);
-    mOutputStreamSets.emplace_back("partialSum", partialSum, FixedRate(ProcessingRate::Rational{1, 1048576}), Delayed(1));
-    setStride(1048576);
+                   {Binding{"lfPos", lfData, GreedyRate(), Deferred()},
+                    Binding{"phraseMask", combinedMask, FixedRate()},
+                    Binding{"byteData", byteData, FixedRate()}},
+                   {}, {}, {},{
+                    InternalScalar{b->getSizeTy(), "segIndex"},
+                    InternalScalar{b->getSizeTy(), "processBeforeThisPos"},
+                   }),
+mSubStride(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS)), mStrideSize(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS)) {
+    mOutputStreamSets.emplace_back("cmpBytes", cmpBytes, BoundedRate(0, 1));
+    mOutputStreamSets.emplace_back("partialSum", partialSum, BoundedRate(0, ceiling(ProcessingRate::Rational{1, 1048576})), Add1());
+    setStride(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS));
 }
-// use symbolEndMarks and check if accessible byte_pos > last accessible symbol_end markPos to ensure complete phrase is written 
-// in a single segment
 void FilterCompressedData::generateMultiBlockLogic(BuilderRef b, Value * const numOfStrides) {
-    ScanWordParameters sw(b, mStride);
-    Constant * sz_STRIDE = b->getSize(mStride);
-    Constant * sz_SUB_STRIDE = b->getSize(mSubStride);
-    Constant * sz_BLOCKS_PER_STRIDE = b->getSize(mStride/b->getBitBlockWidth());
-    Constant * sz_BLOCKS_PER_SUB_STRIDE = b->getSize(mSubStride/b->getBitBlockWidth());
+    ScanWordParameters sw(b, mStrideSize);
+    Constant * sz_STRIDE = b->getSize(mStrideSize);
+    Constant * sz_BLOCKS_PER_STRIDE = b->getSize(mStrideSize/b->getBitBlockWidth());
     Constant * sz_ZERO = b->getSize(0);
     Constant * sz_ONE = b->getSize(1);
-    Constant * sz_EIGHT = b->getSize(8);
-    assert ((mStride % mSubStride) == 0);
-    Value * totalSubStrides =  b->getSize(mStride / mSubStride); // 102400/2048 with BitBlock=256
-    // b->CallPrintInt("totalSubStrides", totalSubStrides);
-
     Type * sizeTy = b->getSizeTy();
 
     BasicBlock * const entryBlock = b->GetInsertBlock();
     BasicBlock * const stridePrologue = b->CreateBasicBlock("stridePrologue");
-    BasicBlock * const subStrideMaskPrep = b->CreateBasicBlock("subStrideMaskPrep");
     BasicBlock * const strideMasksReady = b->CreateBasicBlock("strideMasksReady");
     BasicBlock * const filteringLoop = b->CreateBasicBlock("filteringLoop");
-    BasicBlock * const subStridePhrasesDone = b->CreateBasicBlock("subStridePhrasesDone");
-    BasicBlock * const checkFinalLoopCond = b->CreateBasicBlock("checkFinalLoopCond");
+    BasicBlock * const updateScalars = b->CreateBasicBlock("updateScalars");
+    BasicBlock * const checkWriteOutput = b->CreateBasicBlock("checkWriteOutput");
+    BasicBlock * const writeOutput = b->CreateBasicBlock("writeOutput");
+    BasicBlock * const stridePhrasesDone = b->CreateBasicBlock("stridePhrasesDone");
     BasicBlock * const stridesDone = b->CreateBasicBlock("stridesDone");
     BasicBlock * const updatePending = b->CreateBasicBlock("updatePending");
     BasicBlock * const filteringMaskDone = b->CreateBasicBlock("filteringMaskDone");
+    BasicBlock * const processPhrase = b->CreateBasicBlock("processPhrase");
 
     Value * const initialPos = b->getProcessedItemCount("phraseMask");
+    Value * const avail = b->getAvailableItemCount("phraseMask");
     Value * const initialProducedBytes = b->getProducedItemCount("cmpBytes");
     // b->CallPrintInt("initialProducedBytes", initialProducedBytes);
-    // b->CallPrintInt("avail", avail);
-    // b->CallPrintInt("accessible", b->getAccessibleItemCount("phraseMask"));
     b->CreateBr(stridePrologue);
 
     b->SetInsertPoint(stridePrologue);
@@ -1366,117 +1361,107 @@ void FilterCompressedData::generateMultiBlockLogic(BuilderRef b, Value * const n
     strideNo->addIncoming(sz_ZERO, entryBlock);
     PHINode * const segWritePosPhi = b->CreatePHI(sizeTy, 2);
     segWritePosPhi->addIncoming(initialProducedBytes, entryBlock);
-    PHINode * const segFullPhrasePos = b->CreatePHI(sizeTy, 2);
-    segFullPhrasePos->addIncoming(initialProducedBytes, entryBlock);
     Value * nextStrideNo = b->CreateAdd(strideNo, sz_ONE);
     Value * stridePos = b->CreateAdd(initialPos, b->CreateMul(strideNo, sz_STRIDE));
     Value * strideBlockOffset = b->CreateMul(strideNo, sz_BLOCKS_PER_STRIDE);
-    b->CreateBr(subStrideMaskPrep);
-
-    b->SetInsertPoint(subStrideMaskPrep);
-    PHINode * const subStrideNo = b->CreatePHI(sizeTy, 2);
-    subStrideNo->addIncoming(sz_ZERO, stridePrologue);
-    PHINode * const writePosPhi = b->CreatePHI(sizeTy, 2);
-    writePosPhi->addIncoming(segWritePosPhi, stridePrologue);
-    PHINode * const fullPhraseProducedInStridePhi = b->CreatePHI(sizeTy, 2);
-    fullPhraseProducedInStridePhi->addIncoming(segFullPhrasePos, stridePrologue);
-
-    Value * nextSubStrideNo = b->CreateAdd(subStrideNo, sz_ONE);
-    Value * subStridePos = b->CreateAdd(stridePos, b->CreateMul(subStrideNo, sz_SUB_STRIDE));
-    Value * readSubStrideBlockOffset = b->CreateAdd(strideBlockOffset,
-                                                b->CreateMul(subStrideNo, sz_BLOCKS_PER_SUB_STRIDE));
-    std::vector<Value *> phraseMasks = initializeCompressionMasks1(b, sw, sz_BLOCKS_PER_SUB_STRIDE, 1, readSubStrideBlockOffset, strideMasksReady);
+    std::vector<Value *> phraseMasks = initializeCompressionMasks1(b, sw, sz_BLOCKS_PER_STRIDE, 1, strideBlockOffset, strideMasksReady);
     Value * phraseMask = phraseMasks[0];
 
     b->SetInsertPoint(strideMasksReady);
-    Value * phraseWordBasePtr = b->getInputStreamBlockPtr("phraseMask", sz_ZERO, readSubStrideBlockOffset);
+    Value * phraseWordBasePtr = b->getInputStreamBlockPtr("phraseMask", sz_ZERO, strideBlockOffset);
     phraseWordBasePtr = b->CreateBitCast(phraseWordBasePtr, sw.pointerTy);
-    b->CreateUnlikelyCondBr(b->CreateICmpEQ(phraseMask, sz_ZERO), subStridePhrasesDone, filteringLoop);
+    b->CreateUnlikelyCondBr(b->CreateICmpEQ(phraseMask, sz_ZERO), stridePhrasesDone, filteringLoop);
 
     b->SetInsertPoint(filteringLoop);
     PHINode * const phraseMaskPhi = b->CreatePHI(sizeTy, 2);
     phraseMaskPhi->addIncoming(phraseMask, strideMasksReady);
     PHINode * const phraseWordPhi = b->CreatePHI(sizeTy, 2);
     phraseWordPhi->addIncoming(sz_ZERO, strideMasksReady);
-    PHINode * const subStrideWritePos = b->CreatePHI(sizeTy, 2);
-    subStrideWritePos->addIncoming(writePosPhi, strideMasksReady);
-    PHINode * const subStrideFullPhrasePhi = b->CreatePHI(sizeTy, 2);
-    subStrideFullPhrasePhi->addIncoming(fullPhraseProducedInStridePhi, strideMasksReady);
-
+    PHINode * const writePosPhi = b->CreatePHI(sizeTy, 2);
+    writePosPhi->addIncoming(segWritePosPhi, strideMasksReady);
     Value * phraseWordIdx = b->CreateCountForwardZeroes(phraseMaskPhi, "symIdx");
     Value * nextphraseWord = b->CreateZExtOrTrunc(b->CreateLoad(b->CreateGEP(phraseWordBasePtr, phraseWordIdx)), sizeTy);
     Value * thephraseWord = b->CreateSelect(b->CreateICmpEQ(phraseWordPhi, sz_ZERO), nextphraseWord, phraseWordPhi);
-    Value * phraseWordPos = b->CreateAdd(subStridePos, b->CreateMul(phraseWordIdx, sw.WIDTH));
+    Value * phraseWordPos = b->CreateAdd(stridePos, b->CreateMul(phraseWordIdx, sw.WIDTH));
     Value * phraseMarkPosInWord = b->CreateCountForwardZeroes(thephraseWord);
     Value * phraseMarkPos = b->CreateAdd(phraseWordPos, phraseMarkPosInWord);
 
-    //byte-boundary for phraseWordPos
-    Value * maskBit = sz_ONE;
-    Value * startBase = b->CreateSub(phraseMarkPos, b->CreateURem(phraseMarkPos, sz_EIGHT));
-    Value * startBitOffset = b->CreateSub(phraseMarkPos, startBase);
-    maskBit = b->CreateShl(maskBit, startBitOffset);
-    Value * const maskBasePtr = b->CreateBitCast(b->getRawInputPointer("symEndMarker", startBase), sizeTy->getPointerTo());
-    Value * initialEndMark = b->CreateAlignedLoad(maskBasePtr, 1);
-    Value * checkBitSet = b->CreateAnd(initialEndMark, maskBit);
-    Value * updatedIdx = b->CreateSelect(b->CreateICmpUGT(checkBitSet, sz_ZERO), subStrideWritePos, subStrideFullPhrasePhi);
+    Value * const processBeforeThisPos = b->getScalarField("processBeforeThisPos");
+    // if phraseMarkPos is exceeding processBeforeThisPos, update processBeforeThisPos
+    // also write the partial sum in output stream
+    Value * checkPhrasePos = b->CreateICmpUGE(phraseMarkPos, processBeforeThisPos);
+    b->CreateCondBr(checkPhrasePos, checkWriteOutput, processPhrase);
 
-    b->CreateMemCpy(b->getRawOutputPointer("cmpBytes", subStrideWritePos), b->getRawInputPointer("byteData", phraseMarkPos), sz_ONE, 1);
+    b->SetInsertPoint(checkWriteOutput);  
+
+    // b->CallPrintInt("processBeforeThisPos", processBeforeThisPos);
+    // b->CallPrintInt("phraseMarkPos", phraseMarkPos);
+
+    b->CreateCondBr(b->CreateICmpUGT(phraseMarkPos, sz_ZERO), writeOutput, updateScalars);
+
+    b->SetInsertPoint(writeOutput); 
+    Value * const segProcessed = b->getScalarField("segIndex");
+
+    // b->CallPrintInt("segProcessed", segProcessed);
+    // b->CallPrintInt("writePosPhi", b->CreateSub(writePosPhi, sz_ONE));
+
+    b->CreateStore(b->CreateTrunc(b->CreateSub(writePosPhi, sz_ONE), b->getInt64Ty()), b->getRawOutputPointer("partialSum", segProcessed));
+    b->setScalarField("segIndex", b->CreateAdd(sz_ONE, segProcessed));
+    b->CreateBr(updateScalars);
+
+    b->SetInsertPoint(updateScalars);
+    Value * const curIdx = b->getScalarField("segIndex");
+    Value * lfPosPtr = b->CreateBitCast(b->getRawInputPointer("lfPos", curIdx), b->getSizeTy()->getPointerTo());
+    Value * lfPos = b->CreateAlignedLoad(lfPosPtr, 1);
+    // b->CallPrintInt("curIdx", curIdx);
+    // b->CallPrintInt("lfPos", lfPos);
+    b->setScalarField("processBeforeThisPos", b->CreateAdd(sz_ONE, lfPos));
+    b->CreateBr(processPhrase);
+
+    b->SetInsertPoint(processPhrase);
+    // b->CallPrintInt("writePosPhi", writePosPhi);
+    b->CreateMemCpy(b->getRawOutputPointer("cmpBytes", writePosPhi), b->getRawInputPointer("byteData", phraseMarkPos), sz_ONE, 1);
+    
+    // Value * symPtr = b->CreateBitCast(b->getRawInputPointer("byteData", phraseMarkPos), b->getInt8PtrTy());
+    // b->CreateWriteCall(b->getInt32(STDERR_FILENO), symPtr, b->CreateAdd(sz_ZERO, sz_ONE));
+    Value * const nextWritePos = b->CreateAdd(writePosPhi, sz_ONE, "nextWritePos");
     Value * dropPhrase = b->CreateResetLowestBit(thephraseWord);
     Value * thisWordDone = b->CreateICmpEQ(dropPhrase, sz_ZERO);
     // There may be more phrases in the phrase mask.
     Value * nextphraseMask = b->CreateSelect(thisWordDone, b->CreateResetLowestBit(phraseMaskPhi), phraseMaskPhi);
-    Value * const nextWritePos = b->CreateAdd(subStrideWritePos, sz_ONE);
     BasicBlock * currentBB = b->GetInsertBlock();
     phraseMaskPhi->addIncoming(nextphraseMask, currentBB);
     phraseWordPhi->addIncoming(dropPhrase, currentBB);
-    subStrideWritePos->addIncoming(nextWritePos, currentBB);
-    subStrideFullPhrasePhi->addIncoming(updatedIdx, currentBB);
-    b->CreateCondBr(b->CreateICmpNE(nextphraseMask, sz_ZERO), filteringLoop, subStridePhrasesDone);
+    writePosPhi->addIncoming(nextWritePos, currentBB);
+    b->CreateCondBr(b->CreateICmpNE(nextphraseMask, sz_ZERO), filteringLoop, stridePhrasesDone);
 
-    b->SetInsertPoint(subStridePhrasesDone);
-    PHINode * const nextSubStrideWritePos = b->CreatePHI(sizeTy, 2);
-    nextSubStrideWritePos->addIncoming(nextWritePos, filteringLoop);
-    nextSubStrideWritePos->addIncoming(writePosPhi, strideMasksReady);
+    b->SetInsertPoint(stridePhrasesDone);
+    PHINode * const nextWritePosPhi = b->CreatePHI(sizeTy, 2, "nextWritePosPhi");
+    nextWritePosPhi->addIncoming(segWritePosPhi, strideMasksReady);
+    nextWritePosPhi->addIncoming(nextWritePos, processPhrase);
 
-    PHINode * const nextFullPhraseEndPos = b->CreatePHI(sizeTy, 2);
-    // b->CallPrintInt("updatedIdx", updatedIdx);
-    nextFullPhraseEndPos->addIncoming(updatedIdx, filteringLoop);
-    nextFullPhraseEndPos->addIncoming(fullPhraseProducedInStridePhi, strideMasksReady);
-
-    BasicBlock * stridePhrasesDoneBB = b->GetInsertBlock();
-    subStrideNo->addIncoming(nextSubStrideNo, stridePhrasesDoneBB);
-    writePosPhi->addIncoming(nextSubStrideWritePos, stridePhrasesDoneBB);
-    fullPhraseProducedInStridePhi->addIncoming(nextFullPhraseEndPos, stridePhrasesDoneBB);
-    b->CreateCondBr(b->CreateICmpNE(nextSubStrideNo, totalSubStrides), subStrideMaskPrep, checkFinalLoopCond);
-
-    b->SetInsertPoint(checkFinalLoopCond);
-    strideNo->addIncoming(nextStrideNo, checkFinalLoopCond);
-    Value * segWritePosUpdate = nextSubStrideWritePos; //b->CreateAdd(nextSubStrideWritePos, sz_ONE);
-    segWritePosPhi->addIncoming(segWritePosUpdate, checkFinalLoopCond);
-    Value * segFullPhraseEndPos = nextFullPhraseEndPos;
-    segFullPhrasePos->addIncoming(segFullPhraseEndPos, checkFinalLoopCond);
-    // Value * symPtr1 = b->CreateBitCast(b->getRawInputPointer("byteData", b->CreateSub(phraseMarkPos, b->getSize(3))), b->getInt8PtrTy());
-    // b->CreateWriteCall(b->getInt32(STDERR_FILENO), symPtr1, b->CreateAdd(b->getSize(3), sz_ONE));
-    // b->CallPrintInt("segWritePosUpdate", segWritePosUpdate);
-    // b->CallPrintInt("phraseMarkPos", phraseMarkPos);
-
-    Value * segProcessed = b->CreateAdd(initialPos, b->CreateMul(sz_STRIDE, strideNo));
-    segProcessed = b->CreateUDiv(segProcessed, sz_STRIDE);
-    // b->CallPrintInt("segProcessed", segProcessed);
-    b->CreateStore(b->CreateTrunc(b->CreateSelect(b->isFinal(), segWritePosUpdate, b->CreateAdd(nextFullPhraseEndPos, sz_ONE) /* +1 for the next writable position*/ ), b->getInt64Ty()), b->getRawOutputPointer("partialSum", segProcessed));
-    // Value * symPtr2 = b->CreateBitCast(b->getRawOutputPointer("cmpBytes", b->CreateSub(nextFullPhraseEndPos, b->getSize(3))), b->getInt8PtrTy());
-    // b->CreateWriteCall(b->getInt32(STDERR_FILENO), symPtr2, b->CreateAdd(b->getSize(3), sz_ONE));
+    strideNo->addIncoming(nextStrideNo, stridePhrasesDone);
+    segWritePosPhi->addIncoming(nextWritePosPhi, stridePhrasesDone);
     b->CreateCondBr(b->CreateICmpNE(nextStrideNo, numOfStrides), stridePrologue, stridesDone);
     b->SetInsertPoint(stridesDone);
-    // Value * processedBytes = b->CreateSelect(b->isFinal(), avail, b->CreateSub(phraseWordPos, b->CreateSub(segWritePosUpdate, nextFullPhraseEndPos)));
-    // b->setProcessedItemCount("byteData", processedBytes);
-    b->setProducedItemCount("cmpBytes", segWritePosUpdate);
-    b->CreateCondBr(b->isFinal(), filteringMaskDone, updatePending);
-    b->SetInsertPoint(updatePending);
-    // No partial codewords are written across multiple segments. The full codeword shall be written in current segment.
+    b->setProducedItemCount("partialSum", b->getScalarField("segIndex"));
+    // b->CallPrintInt("nextWritePosPhi-produced", nextWritePosPhi);
+    b->setProducedItemCount("cmpBytes", nextWritePosPhi);
+    b->CreateCondBr(b->isFinal(), updatePending, filteringMaskDone);
 
+    b->SetInsertPoint(updatePending);
+    // b->CallPrintInt("segIndex-updatePending", b->getScalarField("segIndex"));
+    // b->CallPrintInt("nextWritePosPhi-updatePending", nextWritePosPhi);
+    b->CreateStore(b->CreateTrunc(/*b->CreateSub(*/nextWritePosPhi,/* sz_ONE),*/ b->getInt64Ty()), b->getRawOutputPointer("partialSum", b->getScalarField("segIndex")));
+    b->setScalarField("segIndex", b->CreateAdd(sz_ONE, b->getScalarField("segIndex")));
+    // b->CallPrintInt("partialSum-produced-updatePending", b->getScalarField("segIndex"));
+    b->setProducedItemCount("partialSum", b->getScalarField("segIndex"));
     b->CreateBr(filteringMaskDone);
+
     b->SetInsertPoint(filteringMaskDone);
+    // update processed count for lfPos
+    // b->CallPrintInt("segIndex-filteringMaskDone", b->getScalarField("segIndex"));
+    b->setProcessedItemCount("lfPos", b->getScalarField("segIndex"));
 }
 
 // Assumes phrases with frequency >= 2 are compressed
