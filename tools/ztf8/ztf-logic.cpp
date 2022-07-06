@@ -378,9 +378,9 @@ void ZTF_Phrases::generatePabloMethod() {
     std::vector<PabloAST *> basis = getInputStreamSet("basisBits");
     cc::Parabix_CC_Compiler_Builder ccc(getEntryScope(), basis);
     pablo::PabloAST * wordChar = getInputStreamSet("wordChar")[0];
+#if 0 //unsed
     PabloAST * possibleSymStart = getInputStreamSet("possibleSymStart")[0];
     PabloAST * possibleSymEnd = getInputStreamSet("possibleSymEnd")[0];
-#if 0 //unsed
     PabloAST * removeFollowingSymStart = pb.createZeroes();
     PabloAST * removePrecedingSymStart = pb.createZeroes();
     if (mGroup == 1 || mGroup == 3) {

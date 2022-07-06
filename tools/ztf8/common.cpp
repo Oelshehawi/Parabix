@@ -243,9 +243,7 @@ std::vector<Value *> initializeCompressionMasks1(BuilderRef b,
                                                 BasicBlock * strideMasksReady) {
     Constant * sz_ZERO = b->getSize(0);
     Constant * sz_ONE = b->getSize(1);
-    Constant * sz_BLOCKWIDTH = b->getSize(b->getBitBlockWidth());
     Type * sizeTy = b->getSizeTy();
-    Type * bitBlockPtrTy = b->getBitBlockType()->getPointerTo();
     std::vector<Value *> keyMasks(maskCount);
     BasicBlock * const entryBlock = b->GetInsertBlock();
     BasicBlock * const maskInitialization = b->CreateBasicBlock("maskInitialization");
@@ -289,7 +287,6 @@ std::vector<Value *> initializeCompressionMasks11(BuilderRef b,
     BasicBlock * const entryBlock = b->GetInsertBlock();
     BasicBlock * const maskInitialization = b->CreateBasicBlock("maskInitialization");
     Value * const absoluteProcessed = b->CreateMul(absBlockOffset, sz_BLOCKWIDTH);
-    Value * const lastBlockToProcess = b->CreateAdd(absoluteProcessed, b->CreateMul(sz_BLOCKS_PER_STRIDE, sz_BLOCKWIDTH));
     b->CreateBr(maskInitialization);
     b->SetInsertPoint(maskInitialization);
     std::vector<PHINode *> keyMaskAccum(maskCount);

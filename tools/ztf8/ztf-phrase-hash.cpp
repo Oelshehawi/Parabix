@@ -140,7 +140,6 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
     P->CreateKernelCall<AccumRunIndexNew>(SymCount, phraseRuns, runIndex, overflow, phraseRunIndex, phraseOverflow);
     StreamSet * const phraseLenBytes = P->CreateStreamSet(1, 8);
     P->CreateKernelCall<P2SKernel>(phraseRunIndex, phraseLenBytes);
-    StreamSet * const allLenHashValues = P->CreateStreamSet(1, 16); // unused
     phraseLenBixnum[0] = runIndex;
     phraseLenOverflow[0] = overflow;
 
