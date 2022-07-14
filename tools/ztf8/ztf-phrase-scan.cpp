@@ -241,8 +241,8 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     hashcodePos = b->CreateSub(hashcodePos, sz_ONE);
     Value * pfxByte = b->CreateZExt(b->CreateLoad(b->getRawInputPointer("hashValues", hashcodePos)), sizeTy);
     // shift by pfx len bits
-    pfxByte = b->CreateTrunc(b->CreateAnd(pfxByte, lg.PREFIX_LENGTH_MASK), b->getInt8Ty());
-    // codewordVal = b->CreateOr(codewordVal, b->CreateAnd(pfxByte, lg.SUFFIX_MASK));
+    pfxByte = b->CreateTrunc(b->CreateAnd(pfxByte, lg.PREFIX_LENGTH_MASK), b->getInt64Ty());
+    codewordVal = b->CreateOr(b->CreateShl(codewordVal, lg.EXTRA_BITS), b->CreateAnd(pfxByte, lg.EXTRA_BITS_MASK));
     // codewordVal = b->CreateOr(b->CreateAnd(codewordVal, lg.EXTRA_BITS_MASK), b->CreateShl(codewordVal, lg.EXTRA_BITS));
     Value * subTablePtr = b->CreateGEP(hashTableBasePtr, b->CreateMul(b->CreateSub(keyLength, lg.LO), lg.PHRASE_SUBTABLE_SIZE));
     Value * tableIdxHash = b->CreateAnd(codewordVal, lg.TABLE_MASK, "tableIdx");
@@ -456,7 +456,7 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     symHashcodePos = b->CreateSub(symHashcodePos, sz_ONE);
     Value * symPfxByte = b->CreateZExt(b->CreateLoad(b->getRawInputPointer("hashValues", symHashcodePos)), sizeTy);
     symPfxByte = b->CreateTrunc(b->CreateAnd(symPfxByte, lg.PREFIX_LENGTH_MASK), b->getInt64Ty());
-    // symCodewordVal = b->CreateOr(b->CreateAnd(symCodewordVal, lg.EXTRA_BITS_MASK), b->CreateShl(symCodewordVal, lg.EXTRA_BITS));
+    symCodewordVal = b->CreateOr(b->CreateAnd(symPfxByte, lg.EXTRA_BITS_MASK), b->CreateShl(symCodewordVal, lg.EXTRA_BITS));
 
     Value * symSubTablePtr = b->CreateGEP(globalHashTableBasePtr, b->CreateMul(b->CreateSub(symLength, lg.LO), lg.PHRASE_SUBTABLE_SIZE));
     Value * symTableIdxHash = b->CreateAnd(symCodewordVal, lg.TABLE_MASK, "tableIdx");
@@ -873,7 +873,7 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
     Value * ZTF_prefix1 = b->CreateAdd(pfxOffset1, multiplier1);
 #endif
     Value * subTablePtr = b->CreateGEP(hashTableBasePtr, b->CreateMul(b->CreateSub(keyLength, lg.LO), lg.PHRASE_SUBTABLE_SIZE));
-    // codewordVal = b->CreateOr(b->CreateAnd(codewordVal, lg.EXTRA_BITS_MASK), b->CreateShl(codewordVal, lg.EXTRA_BITS));
+    codewordVal = b->CreateOr(b->CreateAnd(pfxByte, lg.EXTRA_BITS_MASK), b->CreateShl(codewordVal, lg.EXTRA_BITS));
     /// TODO: experiment the number of bits in sz_TABLEMASK
     Value * tableIdxHash = b->CreateAnd(codewordVal, lg.TABLE_MASK, "tableIdx");
     // tableIdxHash = b->CreateSelect(b->CreateAnd(b->CreateICmpULT(tableIdxHash, sz_HALF_TBL_IDX), b->CreateICmpEQ(extBit, sz_ONE)),
@@ -2118,7 +2118,7 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
 #endif
 
     Value * subTablePtr = b->CreateGEP(hashTableBasePtr, b->CreateMul(b->CreateSub(keyLength, lg.LO), lg.PHRASE_SUBTABLE_SIZE));
-    // codewordVal = b->CreateOr(b->CreateAnd(codewordVal, lg.EXTRA_BITS_MASK), b->CreateShl(codewordVal, lg.EXTRA_BITS));
+    codewordVal = b->CreateOr(b->CreateAnd(thePfxHashBits, lg.EXTRA_BITS_MASK), b->CreateShl(codewordVal, lg.EXTRA_BITS));
     Value * tableIdxHash = b->CreateAnd(codewordVal, lg.TABLE_MASK, "tableIdx");
     // tableIdxHash = b->CreateSelect(b->CreateAnd(b->CreateICmpULT(tableIdxHash, sz_HALF_TBL_IDX), b->CreateICmpEQ(b->CreateAnd(thePfxHashBits, sz_ONE), sz_ONE)),
     //                                b->CreateAdd(sz_HALF_TBL_IDX, tableIdxHash), tableIdxHash);
@@ -2251,7 +2251,7 @@ void SymbolGroupDecompression::generateMultiBlockLogic(BuilderRef b, Value * con
     Value * symOffset = b->CreateSub(symLength, lg.HALF_LENGTH);
 
     subTablePtr = b->CreateGEP(hashTableBasePtr, b->CreateMul(b->CreateSub(symLength, lg.LO), lg.PHRASE_SUBTABLE_SIZE));
-    // encodedVal = b->CreateOr(b->CreateAnd(encodedVal, lg.EXTRA_BITS_MASK), b->CreateShl(encodedVal, lg.EXTRA_BITS));
+    encodedVal = b->CreateOr(b->CreateAnd(pfxHashBits, lg.EXTRA_BITS_MASK), b->CreateShl(encodedVal, lg.EXTRA_BITS));
     tableIdxHash = b->CreateAnd(encodedVal, lg.TABLE_MASK);
     // tableIdxHash = b->CreateSelect(b->CreateAnd(b->CreateICmpULT(tableIdxHash, sz_HALF_TBL_IDX), b->CreateICmpEQ(b->CreateAnd(pfxHashBits, sz_ONE), sz_ONE)),
     //                 b->CreateAdd(sz_HALF_TBL_IDX, tableIdxHash), tableIdxHash);
