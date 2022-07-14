@@ -78,7 +78,9 @@ LengthGroupParameters::LengthGroupParameters(BuilderRef b, EncodingInfo encoding
     TABLE_MASK(b->getSize((1U << encodingScheme.tableSizeBits(groupNo)) -1)),
     EXTRA_BITS(b->getSize(encodingScheme.tableSizeBits(groupNo) % 7U)),
     EXTRA_BITS_MASK(b->getSize((1UL << (encodingScheme.tableSizeBits(groupNo) % 7U)) - 1UL)),
-    TABLE_IDX_MASK(b->getSize((1U << (8*groupInfo.encoding_bytes)) -1)) {
+    TABLE_IDX_MASK(b->getSize((1U << (8 * groupInfo.encoding_bytes)) -1)),
+    FREQ_TABLE_MASK(b->getSize((1UL << (18U - groupNo)) - 1)) {
+        // llvm::errs() << groupNo << " ->TABLE_MASK : " << ((1U << encodingScheme.tableSizeBits(groupNo)) -1 ) << "\n";
         // llvm::errs() << groupNo << " ->EXTRA_BITS " << (encodingScheme.tableSizeBits(groupNo) % 7U) << "\n";
         // llvm::errs() << groupNo << " ->EXTRA_BITS_MASK " << ((1UL << (encodingScheme.tableSizeBits(groupNo) % 7U)) - 1UL) << "\n";
         assert(groupInfo.hi <= (1UL << (boost::intrusive::detail::floor_log2(groupInfo.lo) + 1UL)));
@@ -102,6 +104,11 @@ unsigned phraseHashSubTableSize(EncodingInfo encodingScheme, unsigned groupNo) {
     }
     // llvm::errs() << "g.lo " << g.lo << " pfx_avail * subTblSize -> " << pfx_avail * subTblSize << "\n";
     return pfx_avail * subTblSize;
+}
+
+unsigned phraseVectorSize(EncodingInfo encodingScheme, unsigned groupNo) {
+    LengthGroupInfo g = encodingScheme.byLength[groupNo];
+    return (1048576 / g.hi);
 }
 unsigned phraseHashTableSize(LengthGroupInfo g) {
     // llvm::errs() << "lo " << g.lo << "phraseHashTableSize " <<  g.hi * (1<<(g.hash_bits + g.encoding_bytes)) << "\n";

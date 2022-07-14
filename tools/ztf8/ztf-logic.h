@@ -43,6 +43,7 @@ public:
     unsigned getFreqSubtableSize(unsigned groupNo) const;
     unsigned getPhraseExtensionBits(unsigned groupNo, unsigned enc_scheme) const;
     unsigned tableSizeBits(unsigned groupNo) const;
+    unsigned getHashBytes(unsigned groupNo) const;
     std::string uniqueSuffix() const;
 };
 

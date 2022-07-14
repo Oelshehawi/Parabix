@@ -64,12 +64,13 @@ struct LengthGroupParameters {
     Constant * EXTRA_BITS;
     Constant * EXTRA_BITS_MASK;
     Constant * TABLE_IDX_MASK;
-
+    Constant * FREQ_TABLE_MASK;
     LengthGroupParameters(BuilderRef b, EncodingInfo encodingScheme, unsigned groupNo, unsigned numSym = 0);
 };
 
 unsigned hashTableSize(LengthGroupInfo g);
 unsigned phraseHashSubTableSize(EncodingInfo encodingScheme, unsigned groupNo);
+unsigned phraseVectorSize(EncodingInfo encodingScheme, unsigned groupNo);
 unsigned phraseHashTableSize(LengthGroupInfo g);
 unsigned freqTableSize(LengthGroupInfo g);
 std::string lengthRangeSuffix(EncodingInfo encodingScheme, unsigned lo, unsigned hi);

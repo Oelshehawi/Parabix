@@ -198,6 +198,15 @@ unsigned EncodingInfo::tableSizeBits(unsigned groupNo) const {
     }
 }
 
+unsigned EncodingInfo::getHashBytes(unsigned groupNo) const {
+    switch(groupNo) {
+        case 0: return 3;
+        case 1: return 3;
+        case 2: return 2;
+        case 3: return 2;
+    }
+}
+
 Bindings WordMarkKernelOutputBindings(StreamSet * WordMarks, StreamSet * possibleSymStart) {
     if (possibleSymStart == nullptr) return {Binding{"WordMarks", WordMarks}};
     return {Binding{"WordMarks", WordMarks}, Binding{"possibleSymStart", possibleSymStart}};

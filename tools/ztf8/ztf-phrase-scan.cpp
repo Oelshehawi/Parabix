@@ -49,6 +49,12 @@ using BuilderRef = Kernel::BuilderRef;
 // Each segment consists of full lines only
 // lfData -> positions of line break in each segment of 1048576 bytes
 
+// frequency calculation: VERY SLOW!!
+// use a simple vector to store all the unique phrases.
+// search the vector sequentially for occurrence of every new phrase.
+// if found, increment the counter corresponding to the phrase; maintain the counters in another vector. Phrases and counter will have same index.
+// else, add the phrase to the end of the vector and initialize the counter to 1.
+
 MarkRepeatedHashvalue::MarkRepeatedHashvalue(BuilderRef b,
                                                EncodingInfo encodingScheme,
                                                unsigned numSyms,
@@ -78,7 +84,9 @@ MarkRepeatedHashvalue::MarkRepeatedHashvalue(BuilderRef b,
                     InternalScalar{ArrayType::get(ArrayType::get(ArrayType::get(b->getInt8Ty(), encodingScheme.byLength[groupNo].hi), phraseHashSubTableSize(encodingScheme, groupNo)), encodingScheme.byLength[groupNo].hi - encodingScheme.byLength[groupNo].lo + 1), "hashTable"},
                     InternalScalar{ArrayType::get(b->getInt8Ty(), phraseHashSubTableSize(encodingScheme, groupNo) * (encodingScheme.byLength[groupNo].hi - encodingScheme.byLength[groupNo].lo + 1)), "freqTable"},
                     InternalScalar{ArrayType::get(ArrayType::get(ArrayType::get(b->getInt8Ty(), encodingScheme.byLength[groupNo].hi), phraseHashSubTableSize(encodingScheme, groupNo)), encodingScheme.byLength[groupNo].hi - encodingScheme.byLength[groupNo].lo + 1), "segmentHashTable"},
-                    InternalScalar{ArrayType::get(b->getInt8Ty(), phraseHashSubTableSize(encodingScheme, groupNo) * (encodingScheme.byLength[groupNo].hi - encodingScheme.byLength[groupNo].lo + 1)), "segmentFreqTable"}}),
+                    InternalScalar{ArrayType::get(b->getInt8Ty(), phraseHashSubTableSize(encodingScheme, groupNo) * (encodingScheme.byLength[groupNo].hi - encodingScheme.byLength[groupNo].lo + 1)), "segmentFreqTable"},
+                    InternalScalar{ArrayType::get(ArrayType::get(ArrayType::get(b->getInt8Ty(), encodingScheme.byLength[groupNo].hi), phraseVectorSize(encodingScheme, groupNo)), encodingScheme.byLength[groupNo].hi - encodingScheme.byLength[groupNo].lo + 1), "phraseVector"},
+                    InternalScalar{ArrayType::get(b->getSizeTy(), phraseVectorSize(encodingScheme, groupNo) * (encodingScheme.byLength[groupNo].hi - encodingScheme.byLength[groupNo].lo + 1)), "phraseFreqCount"}}),
 mEncodingScheme(encodingScheme), mStrideSize(1048576), mGroupNo(groupNo), mNumSym(numSyms), mSubStride(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS)), mOffset(offset) {
     mOutputStreamSets.emplace_back("hashMarks", hashMarks, FixedRate(), Delayed(1048576));
     mOutputStreamSets.emplace_back("hashValuesUpdated", hashValuesUpdated, FixedRate(), Delayed(1048576));
@@ -93,9 +101,14 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     Constant * sz_ZERO = b->getSize(0);
     Constant * sz_ONE = b->getSize(1);
     Constant * sz_TWO = b->getSize(2);
+    Constant * sz_EIGHT = b->getSize(8);
     Constant * sz_BITS = b->getSize(SIZE_T_BITS);
     Constant * sz_BLOCKWIDTH = b->getSize(b->getBitBlockWidth());
     Constant * sz_PHRASE_LEN_OFFSET = b->getSize(mOffset);
+    Constant * sz_FF = b->getSize(0xFF);
+    Constant * sz_FFFF = b->getSize(0xFFFF);
+    Value * const sz_PHRASELEN_VECTOR_SIZE = b->getSize(mEncodingScheme.byLength[mGroupNo].hi * phraseVectorSize(mEncodingScheme, mGroupNo));
+    Value * const sz_PHRASELEN_FREQ_VECTOR_SIZE = b->getSize(phraseVectorSize(mEncodingScheme, mGroupNo));
     Value * sz_HALF_TBL_IDX = b->getSize(phraseHashSubTableSize(mEncodingScheme, mGroupNo) / 2);
     Value * sz_HALF_TBL_IDX_0 = b->getSize(phraseHashSubTableSize(mEncodingScheme, mGroupNo) / 3);
     Value * checkGroupNum = b->CreateICmpUGT(b->getSize(mGroupNo), sz_ZERO);
@@ -143,6 +156,28 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     BasicBlock * const compareOverlappingSymInLastGroup = b->CreateBasicBlock("compareOverlappingSymInLastGroup");
     // BasicBlock * const printPhrase = b->CreateBasicBlock("printPhrase");
     // BasicBlock * const proceed = b->CreateBasicBlock("proceed");
+
+    BasicBlock * const freqCalcPrep = b->CreateBasicBlock("freqCalcPrep");
+    BasicBlock * const phraseMaskReady = b->CreateBasicBlock("phraseMaskReady");
+    BasicBlock * const phraseProcessingLoop = b->CreateBasicBlock("phraseProcessingLoop");
+    BasicBlock * const subStridePhrasesDone_0 = b->CreateBasicBlock("subStridePhrasesDone_0");
+    BasicBlock * const processPhrase = b->CreateBasicBlock("processPhrase");
+    BasicBlock * const getOrAddPhrase = b->CreateBasicBlock("getOrAddPhrase");
+    BasicBlock * const nextPhrase = b->CreateBasicBlock("nextPhrase");
+    BasicBlock * const insertPhrase = b->CreateBasicBlock("insertPhrase");
+    BasicBlock * const comparePhrases = b->CreateBasicBlock("comparePhrases");
+    BasicBlock * const checkNextIdx = b->CreateBasicBlock("checkNextIdx");
+    BasicBlock * const updatePhraseFreq = b->CreateBasicBlock("updatePhraseFreq");
+
+    BasicBlock * const freqCalcPrep_part2 = b->CreateBasicBlock("freqCalcPrep_part2");
+    BasicBlock * const phraseMaskReady_part2 = b->CreateBasicBlock("phraseMaskReady_part2");
+    BasicBlock * const phraseProcessingLoop_part2 = b->CreateBasicBlock("phraseProcessingLoop_part2");
+    BasicBlock * const processPhrase_part2 = b->CreateBasicBlock("processPhrase_part2");
+    BasicBlock * const nextPhrase_part2 = b->CreateBasicBlock("nextPhrase_part2");
+    BasicBlock * const lookupPhrase = b->CreateBasicBlock("lookupPhrase");
+    BasicBlock * const checkNextIdx_part2 = b->CreateBasicBlock("checkNextIdx_part2");
+    BasicBlock * const writeFreqInBuffer = b->CreateBasicBlock("writeFreqInBuffer");
+    BasicBlock * const subStridePhrasesDone_1 = b->CreateBasicBlock("subStridePhrasesDone_1");
 #ifdef PRINT_HT_STATS_MARK_REPEATED_HASHVAL
     BasicBlock * const printHTusage = b->CreateBasicBlock("printHTusage");
     BasicBlock * const iterateSubTbl = b->CreateBasicBlock("iterateSubTbl");
@@ -159,6 +194,8 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     Value * freqTableBasePtr = b->CreateBitCast(b->getScalarFieldPtr("segmentFreqTable"), b->getInt8PtrTy());
     Value * globalHashTableBasePtr = b->CreateBitCast(b->getScalarFieldPtr("hashTable"), b->getInt8PtrTy());
     Value * globalFreqTableBasePtr = b->CreateBitCast(b->getScalarFieldPtr("freqTable"), b->getInt8PtrTy());
+    Value * phraseVectorBasePtr = b->CreateBitCast(b->getScalarFieldPtr("phraseVector"), b->getInt8PtrTy());
+    Value * phraseFreqVecBasePtr = b->CreateBitCast(b->getScalarFieldPtr("phraseFreqCount"), b->getInt16Ty()->getPointerTo());
 
     Value * pendingMask = b->CreateNot(b->getScalarField("pendingMaskInverted")); // may not be needed as we do not need to LookBehind any processed words
     Value * producedPtr = b->CreateBitCast(b->getRawOutputPointer("hashMarks", actualProcessed), bitBlockPtrTy);
@@ -175,8 +212,8 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     Value * const curIdx = b->getScalarField("segIndex");
     Value * lfPosPtr = b->CreateBitCast(b->getRawInputPointer("lfPos", curIdx), b->getSizeTy()->getPointerTo());
     Value * lfPos = b->CreateAlignedLoad(lfPosPtr, 1);
-    Value * toCopy = b->CreateSub(b->CreateMul(b->CreateSub(lfPos, b->getScalarField("lastLfPos")), sz_TWO), sz_ONE); // data to be written in this stride
-    Value * memCpyPos = b->CreateAdd(b->getScalarField("lastLfPos"), sz_ONE);
+    Value * toCopy = b->CreateMul(b->CreateSub(lfPos, b->getScalarField("lastLfPos")), sz_TWO);
+    Value * memCpyPos = b->getScalarField("lastLfPos");
     b->CreateMemCpy(b->getRawOutputPointer("hashValuesUpdated", memCpyPos), b->getRawInputPointer("hashValues", memCpyPos), toCopy, 1); 
 
     Value * totalProcessed = b->CreateMul(b->getScalarField("absBlocksProcessed"), sz_BLOCKWIDTH);
@@ -185,13 +222,207 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     Value * processBeforeThisPos = lfPos;
     Value * processAfterThisPos = b->getScalarField("lastLfPos");
     b->setScalarField("lastLfPos", lfPos);
+
+    Value * const sz_phraseVector = b->getSize(phraseVectorSize(mEncodingScheme, mGroupNo));
     // overlapping partial blocks are processed twice within the same segment -> ok.
     // When the segment changes, do not process the partial block's already processed symbols.
-    b->CreateBr(subStrideMaskPrep);
+// ====================================================================
+    b->CreateBr(freqCalcPrep);
 
+    b->SetInsertPoint(freqCalcPrep);
+    PHINode * const step0subStrideNo = b->CreatePHI(sizeTy, 2, "step0subStrideNo");
+    step0subStrideNo->addIncoming(sz_ZERO, stridePrologue);
+    Value * step0nextSubStrideNo = b->CreateAdd(step0subStrideNo, sz_ONE);
+    Value * step0subStridePos = b->CreateAdd(stridePos, b->CreateMul(step0subStrideNo, sz_SUB_STRIDE));
+    Value * step0subStrideBlockOffset = b->CreateAdd(strideBlockOffset, b->CreateMul(step0subStrideNo, sz_BLOCKS_PER_SUB_STRIDE));
+    std::vector<Value *> phraseMasks0 = initializeCompressionMasks2(b, sw, sz_BLOCKS_PER_SUB_STRIDE, 1, step0subStrideBlockOffset, hashMarksPtr, phraseMaskReady);
+    Value * phraseMask0 = phraseMasks0[0];
+
+    b->SetInsertPoint(phraseMaskReady);
+    step0subStrideBlockOffset = b->CreateSub(step0subStrideBlockOffset, processedBlocks);
+    Value * phraseWordBasePtr = b->getInputStreamBlockPtr("symEndMarks", sz_ZERO, step0subStrideBlockOffset);
+    phraseWordBasePtr = b->CreateBitCast(phraseWordBasePtr, sw.pointerTy);
+    b->CreateUnlikelyCondBr(b->CreateICmpEQ(phraseMask0, sz_ZERO), subStridePhrasesDone_0, phraseProcessingLoop);
+
+    b->SetInsertPoint(phraseProcessingLoop);
+    PHINode * const phraseMaskPhi = b->CreatePHI(sizeTy, 2);
+    phraseMaskPhi->addIncoming(phraseMask0, phraseMaskReady);
+    PHINode * const phraseWordPhi = b->CreatePHI(sizeTy, 2);
+    phraseWordPhi->addIncoming(sz_ZERO, phraseMaskReady);
+    Value * phraseWordIdx = b->CreateCountForwardZeroes(phraseMaskPhi, "phraseWordIdx");
+    Value * nextPhraseWord = b->CreateZExtOrTrunc(b->CreateLoad(b->CreateGEP(phraseWordBasePtr, phraseWordIdx)), sizeTy);
+    Value * thePhraseWord = b->CreateSelect(b->CreateICmpEQ(phraseWordPhi, sz_ZERO), nextPhraseWord, phraseWordPhi);
+    Value * phraseWordPos = b->CreateAdd(step0subStridePos, b->CreateMul(phraseWordIdx, sw.WIDTH));
+    Value * phraseMarkPosInWord = b->CreateCountForwardZeroes(thePhraseWord);
+    Value * phraseMarkPos = b->CreateAdd(phraseWordPos, phraseMarkPosInWord, "symEndPos");
+    Value * phraseProcessCond = b->CreateAnd(b->CreateICmpULE(phraseMarkPos, processBeforeThisPos), b->CreateICmpUGT(phraseMarkPos, processAfterThisPos));
+    b->CreateCondBr(phraseProcessCond, processPhrase, nextPhrase);
+
+    b->SetInsertPoint(processPhrase);
+    /* Determine the sym length. */
+    Value * phraseHashValue = b->CreateZExt(b->CreateLoad(b->getRawInputPointer("hashValues", phraseMarkPos)), sizeTy);
+    Value * phraseLength = b->CreateAdd(b->CreateLShr(phraseHashValue, lg.MAX_HASH_BITS), sz_PHRASE_LEN_OFFSET, "phraseLength");
+    Value * phraseStartPos = b->CreateSub(phraseMarkPos, b->CreateSub(phraseLength, sz_ONE), "phraseStartPos");
+    // phraseOffset for accessing the final half of an entry.
+    Value * phraseOffset = b->CreateSub(phraseLength, lg.HALF_LENGTH);
+
+    Value * fullSymPtr1 = b->CreateBitCast(b->getRawInputPointer("byteData", phraseStartPos), lg.halfSymPtrTy);
+    Value * fullSymPtr2 = b->CreateBitCast(b->getRawInputPointer("byteData", b->CreateAdd(phraseStartPos, phraseOffset)), lg.halfSymPtrTy);
+    Value * fullSym1 = b->CreateAlignedLoad(fullSymPtr1, 1);
+    Value * fullSym2 = b->CreateAlignedLoad(fullSymPtr2, 1);
+
+    Value * const maxIdx = b->CreateMul(sz_phraseVector, phraseLength);
+
+    b->CreateBr(getOrAddPhrase);
+    b->SetInsertPoint(getOrAddPhrase);
+    PHINode * idx = b->CreatePHI(sizeTy, 2);
+    idx->addIncoming(sz_ZERO, processPhrase);
+    Value * nextIdx = b->CreateAdd(idx, phraseLength);
+    Value * phraseLenEntryPtr = b->CreateInBoundsGEP(phraseVectorBasePtr, b->CreateMul(b->CreateSub(phraseLength, lg.LO), sz_PHRASELEN_VECTOR_SIZE));
+    Value * phraseIdxPtr = b->CreateGEP(phraseLenEntryPtr, idx);
+    Value * phraseEntryPtr = b->CreateInBoundsGEP(phraseIdxPtr, sz_ZERO);
+    Value * phraseEntryPtr1 = b->CreateBitCast(phraseEntryPtr, lg.halfSymPtrTy);
+    Value * phraseEntryPtr2 = b->CreateBitCast(b->CreateGEP(phraseEntryPtr, phraseOffset), lg.halfSymPtrTy);
+    Value * phraseEntry1 = b->CreateMonitoredScalarFieldLoad("phraseVector", phraseEntryPtr1);
+    Value * phraseEntry2 = b->CreateMonitoredScalarFieldLoad("phraseVector", phraseEntryPtr2);
+    Value * phraseFreqIdxPtr = b->CreateGEP(phraseFreqVecBasePtr, b->CreateMul(b->CreateSub(phraseLength, lg.LO), sz_PHRASELEN_FREQ_VECTOR_SIZE));
+    Value * phraseFreqPtr = b->CreateInBoundsGEP(phraseFreqIdxPtr, idx);
+    Value * phraseFreqEntryPtr = b->CreateBitCast(phraseFreqPtr, b->getInt16Ty()->getPointerTo());
+    Value * freqEntry = b->CreateMonitoredScalarFieldLoad("phraseFreqCount", phraseFreqEntryPtr);
+
+    Value * entryEmpty = b->CreateICmpEQ(b->CreateOr(phraseEntry1, phraseEntry2), Constant::getNullValue(lg.halfLengthTy));
+    b->CreateCondBr(entryEmpty, insertPhrase, comparePhrases);
+
+    b->SetInsertPoint(insertPhrase);
+    b->CreateMonitoredScalarFieldStore("phraseVector", fullSym1, phraseEntryPtr1);
+    b->CreateMonitoredScalarFieldStore("phraseVector", fullSym2, phraseEntryPtr2);
+    b->CreateMonitoredScalarFieldStore("phraseFreqCount", b->getInt16(1), phraseFreqEntryPtr);
+    // initialize the counter
+    b->CreateBr(nextPhrase);
+    b->SetInsertPoint(comparePhrases);
+    Value * phrasesEqual = b->CreateAnd(b->CreateICmpEQ(phraseEntry1, fullSym1), b->CreateICmpEQ(phraseEntry2, fullSym2));
+    b->CreateCondBr(phrasesEqual, updatePhraseFreq, checkNextIdx);
+
+    b->SetInsertPoint(checkNextIdx);
+    idx->addIncoming(nextIdx, checkNextIdx);
+    b->CreateCondBr(b->CreateICmpEQ(nextIdx, maxIdx), nextPhrase, getOrAddPhrase);
+
+    b->SetInsertPoint(updatePhraseFreq);
+    b->CreateMonitoredScalarFieldStore("phraseFreqCount", b->CreateAdd(b->getInt16(1), freqEntry), phraseFreqEntryPtr);
+    // update the count at index "idx"
+    b->CreateBr(nextPhrase);
+
+    b->SetInsertPoint(nextPhrase);
+    Value * dropPhrase = b->CreateResetLowestBit(thePhraseWord);
+    Value * thisPhraseWordDone = b->CreateICmpEQ(dropPhrase, sz_ZERO);
+    // There may be more syms in the sym mask.
+    Value * nextPhraseMask = b->CreateSelect(thisPhraseWordDone, b->CreateResetLowestBit(phraseMaskPhi), phraseMaskPhi);
+    BasicBlock * currentBB0 = b->GetInsertBlock();
+    phraseMaskPhi->addIncoming(nextPhraseMask, currentBB0);
+    phraseWordPhi->addIncoming(dropPhrase, currentBB0);
+    b->CreateCondBr(b->CreateICmpNE(nextPhraseMask, sz_ZERO), phraseProcessingLoop, subStridePhrasesDone_0);
+
+    b->SetInsertPoint(subStridePhrasesDone_0);
+    step0subStrideNo->addIncoming(step0nextSubStrideNo, subStridePhrasesDone_0);
+    b->CreateCondBr(b->CreateICmpNE(step0nextSubStrideNo, totalSubStrides), freqCalcPrep, freqCalcPrep_part2);
+// ========================================================================================================================================================================
+//                                            create final freq buffer
+// ========================================================================================================================================================================
+
+    b->SetInsertPoint(freqCalcPrep_part2);
+    PHINode * const step01subStrideNo = b->CreatePHI(sizeTy, 2, "step01subStrideNo");
+    step01subStrideNo->addIncoming(sz_ZERO, subStridePhrasesDone_0);
+    Value * step01nextSubStrideNo = b->CreateAdd(step01subStrideNo, sz_ONE);
+    Value * step01subStridePos = b->CreateAdd(stridePos, b->CreateMul(step01subStrideNo, sz_SUB_STRIDE));
+    Value * step01subStrideBlockOffset = b->CreateAdd(strideBlockOffset, b->CreateMul(step01subStrideNo, sz_BLOCKS_PER_SUB_STRIDE));
+    std::vector<Value *> phraseMasks01 = initializeCompressionMasks2(b, sw, sz_BLOCKS_PER_SUB_STRIDE, 1, step01subStrideBlockOffset, hashMarksPtr, phraseMaskReady_part2);
+    Value * phraseMask01 = phraseMasks01[0];
+
+    b->SetInsertPoint(phraseMaskReady_part2);
+    step01subStrideBlockOffset = b->CreateSub(step01subStrideBlockOffset, processedBlocks);
+    Value * phraseWordBasePtr0 = b->getInputStreamBlockPtr("symEndMarks", sz_ZERO, step01subStrideBlockOffset);
+    phraseWordBasePtr0 = b->CreateBitCast(phraseWordBasePtr0, sw.pointerTy);
+    b->CreateUnlikelyCondBr(b->CreateICmpEQ(phraseMask01, sz_ZERO), subStridePhrasesDone_1, phraseProcessingLoop_part2);
+
+    b->SetInsertPoint(phraseProcessingLoop_part2);
+    PHINode * const phraseMaskPhi0 = b->CreatePHI(sizeTy, 2);
+    phraseMaskPhi0->addIncoming(phraseMask01, phraseMaskReady_part2);
+    PHINode * const phraseWordPhi0 = b->CreatePHI(sizeTy, 2);
+    phraseWordPhi0->addIncoming(sz_ZERO, phraseMaskReady_part2);
+    Value * phraseWordIdx0 = b->CreateCountForwardZeroes(phraseMaskPhi0, "phraseWordIdx0");
+    Value * nextPhraseWord0 = b->CreateZExtOrTrunc(b->CreateLoad(b->CreateGEP(phraseWordBasePtr0, phraseWordIdx0)), sizeTy);
+    Value * thePhraseWord0 = b->CreateSelect(b->CreateICmpEQ(phraseWordPhi0, sz_ZERO), nextPhraseWord0, phraseWordPhi0);
+    Value * phraseWordPos0 = b->CreateAdd(step01subStridePos, b->CreateMul(phraseWordIdx0, sw.WIDTH));
+    Value * phraseMarkPosInWord0 = b->CreateCountForwardZeroes(thePhraseWord0);
+    Value * phraseMarkPos0 = b->CreateAdd(phraseWordPos0, phraseMarkPosInWord0, "symEndPos");
+    Value * phraseProcessCond0 = b->CreateAnd(b->CreateICmpULE(phraseMarkPos0, processBeforeThisPos), b->CreateICmpUGT(phraseMarkPos0, processAfterThisPos));
+    b->CreateCondBr(phraseProcessCond0, processPhrase_part2, nextPhrase_part2);
+
+    b->SetInsertPoint(processPhrase_part2);
+    /* Determine the sym length. */
+    Value * phraseHashValue0 = b->CreateZExt(b->CreateLoad(b->getRawInputPointer("hashValues", phraseMarkPos0)), sizeTy);
+    Value * phraseLength0 = b->CreateAdd(b->CreateLShr(phraseHashValue0, lg.MAX_HASH_BITS), sz_PHRASE_LEN_OFFSET, "phraseLength0");
+    Value * phraseStartPos0 = b->CreateSub(phraseMarkPos0, b->CreateSub(phraseLength0, sz_ONE), "phraseStartPos0");
+    // phraseOffset for accessing the final half of an entry.
+    Value * phraseOffset0 = b->CreateSub(phraseLength0, lg.HALF_LENGTH);
+
+    Value * fullSymPtr10 = b->CreateBitCast(b->getRawInputPointer("byteData", phraseStartPos0), lg.halfSymPtrTy);
+    Value * fullSymPtr20 = b->CreateBitCast(b->getRawInputPointer("byteData", b->CreateAdd(phraseStartPos0, phraseOffset0)), lg.halfSymPtrTy);
+    Value * fullSym10 = b->CreateAlignedLoad(fullSymPtr10, 1);
+    Value * fullSym20 = b->CreateAlignedLoad(fullSymPtr20, 1);
+
+    Value * const maxIdx0 = b->CreateMul(sz_phraseVector, phraseLength0);
+
+    b->CreateBr(lookupPhrase);
+    b->SetInsertPoint(lookupPhrase);
+    PHINode * idx0 = b->CreatePHI(sizeTy, 2);
+    idx0->addIncoming(sz_ZERO, processPhrase_part2);
+    Value * nextIdx0 = b->CreateAdd(idx0, phraseLength0);
+    Value * phraseLenEntryPtr0 = b->CreateInBoundsGEP(phraseVectorBasePtr, b->CreateMul(b->CreateSub(phraseLength0, lg.LO), sz_PHRASELEN_VECTOR_SIZE));
+    Value * phraseIdxPtr0 = b->CreateGEP(phraseLenEntryPtr0, idx0);
+    Value * phraseEntryPtr0 = b->CreateInBoundsGEP(phraseIdxPtr0, sz_ZERO);
+    Value * phraseEntryPtr01 = b->CreateBitCast(phraseEntryPtr0, lg.halfSymPtrTy);
+    Value * phraseEntryPtr02 = b->CreateBitCast(b->CreateGEP(phraseEntryPtr0, phraseOffset0), lg.halfSymPtrTy);
+    Value * phraseEntry10 = b->CreateMonitoredScalarFieldLoad("phraseVector", phraseEntryPtr01);
+    Value * phraseEntry20 = b->CreateMonitoredScalarFieldLoad("phraseVector", phraseEntryPtr02);
+    Value * phraseFreqIdxPtr0 = b->CreateGEP(phraseFreqVecBasePtr, b->CreateMul(b->CreateSub(phraseLength0, lg.LO), sz_PHRASELEN_FREQ_VECTOR_SIZE));
+    Value * phraseFreqPtr0 = b->CreateInBoundsGEP(phraseFreqIdxPtr0, idx0);
+    Value * phraseFreqEntryPtr0 = b->CreateBitCast(phraseFreqPtr0, b->getInt16Ty()->getPointerTo());
+    Value * finalFreq = b->CreateMonitoredScalarFieldLoad("phraseFreqCount", phraseFreqEntryPtr0);
+
+    Value * phrasesEqual0 = b->CreateAnd(b->CreateICmpEQ(phraseEntry10, fullSym10), b->CreateICmpEQ(phraseEntry20, fullSym20));
+    b->CreateCondBr(phrasesEqual0, writeFreqInBuffer, checkNextIdx_part2);
+
+    b->SetInsertPoint(writeFreqInBuffer);
+    // b->CreateWriteCall(b->getInt32(STDERR_FILENO), b->CreateBitCast(phraseEntryPtr0, b->getInt8PtrTy()), phraseLength0);
+    // b->CallPrintInt("finalFreq", finalFreq);
+    b->CreateStore(b->CreateTrunc(b->CreateAnd(finalFreq, sz_FFFF), b->getInt16Ty()), b->getRawOutputPointer("hashValuesUpdated", phraseMarkPos0));
+    b->CreateBr(nextPhrase_part2);
+
+    b->SetInsertPoint(checkNextIdx_part2);
+    idx0->addIncoming(nextIdx0, checkNextIdx_part2);
+    b->CreateCondBr(b->CreateICmpEQ(nextIdx0, maxIdx0), nextPhrase_part2, lookupPhrase);
+
+    b->SetInsertPoint(nextPhrase_part2);
+    Value * dropPhrase0 = b->CreateResetLowestBit(thePhraseWord0);
+    Value * thisPhraseWordDone0 = b->CreateICmpEQ(dropPhrase0, sz_ZERO);
+    // There may be more syms in the sym mask.
+    Value * nextPhraseMask0 = b->CreateSelect(thisPhraseWordDone0, b->CreateResetLowestBit(phraseMaskPhi0), phraseMaskPhi0);
+    BasicBlock * currentBB01 = b->GetInsertBlock();
+    phraseMaskPhi0->addIncoming(nextPhraseMask0, currentBB01);
+    phraseWordPhi0->addIncoming(dropPhrase0, currentBB01);
+    b->CreateCondBr(b->CreateICmpNE(nextPhraseMask0, sz_ZERO), phraseProcessingLoop_part2, subStridePhrasesDone_1);
+
+    b->SetInsertPoint(subStridePhrasesDone_1);
+    step01subStrideNo->addIncoming(step01nextSubStrideNo, subStridePhrasesDone_1);
+    b->CreateCondBr(b->CreateICmpNE(step01nextSubStrideNo, totalSubStrides), freqCalcPrep_part2, subStrideMaskPrep);
+
+// ========================================================================================================================================================================
+//                                 final freq buffer created
+// ========================================================================================================================================================================
     b->SetInsertPoint(subStrideMaskPrep);
     PHINode * const subStrideNo = b->CreatePHI(sizeTy, 2);
-    subStrideNo->addIncoming(sz_ZERO, stridePrologue);
+    subStrideNo->addIncoming(sz_ZERO, subStridePhrasesDone_1);
     Value * nextSubStrideNo = b->CreateAdd(subStrideNo, sz_ONE);
     Value * subStridePos = b->CreateAdd(stridePos, b->CreateMul(subStrideNo, sz_SUB_STRIDE));
     Value * subStrideBlockOffset = b->CreateAdd(strideBlockOffset, b->CreateMul(subStrideNo, sz_BLOCKS_PER_SUB_STRIDE));
@@ -565,6 +796,9 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     Value * freqTableSz = b->getSize(phraseHashSubTableSize(mEncodingScheme, mGroupNo) * (mEncodingScheme.byLength[mGroupNo].hi - mEncodingScheme.byLength[mGroupNo].lo + 1));
     b->CreateMemZero(hashTableBasePtr, hashTableSz);
     b->CreateMemZero(freqTableBasePtr, freqTableSz);
+    b->CreateMemZero(phraseVectorBasePtr, b->getSize(mEncodingScheme.byLength[mGroupNo].hi * 
+                                                     phraseVectorSize(mEncodingScheme, mGroupNo) * 
+                                                     (mEncodingScheme.byLength[mGroupNo].hi - mEncodingScheme.byLength[mGroupNo].lo + 1)));
     b->CreateCondBr(b->CreateICmpNE(nextStrideNo, numOfStrides), stridePrologue, stridesDone);
     b->SetInsertPoint(stridesDone);
 
