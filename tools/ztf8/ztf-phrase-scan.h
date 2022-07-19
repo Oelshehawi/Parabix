@@ -40,6 +40,7 @@ public:
                            StreamSet * symEndMarks,
                            StreamSet * cmpMarksSoFar,
                            StreamSet * const hashValues,
+                           StreamSet * const initFreq,
                            StreamSet * const byteData,
                            StreamSet * hashMarks,
                            StreamSet * hashValuesUpdated,

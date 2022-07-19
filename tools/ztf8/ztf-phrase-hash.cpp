@@ -186,6 +186,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
     std::vector<StreamSet *> allHashMarks;
     StreamSet * const inputBytes = codeUnitStream;
     StreamSet * cmpMarksSoFar = symEnd;
+    StreamSet * initFreq = allHashValues[0]; // -> to compare with any overlapping phrase in other group --> useful for 2-sym phrases
     for (unsigned sym = 0; sym < SymCount; sym++) {
         int startLgIdx = 0;
         int endIdx = encodingScheme1.byLength.size() - 1;
@@ -201,8 +202,8 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
             StreamSet * const groupMarks = P->CreateStreamSet(1);
             P->CreateKernelCall<LengthGroupSelector>(encodingScheme1, i, phraseRuns, phraseLenBixnum[sym], phraseLenOverflow[sym]/*overflow*/, groupMarks, PhraseLenOffset);
             StreamSet * const hashMarks = P->CreateStreamSet(1);
-            StreamSet * const hashValuesUpdated = P->CreateStreamSet(1, 16);
-            P->CreateKernelCall<MarkRepeatedHashvalue>(encodingScheme1, sym, i, PhraseLenOffset, LFpartialSum, groupMarks, cmpMarksSoFar, hashValues, inputBytes, hashMarks, hashValuesUpdated);
+            StreamSet * const phraseFreq = P->CreateStreamSet(1, 16);
+            P->CreateKernelCall<MarkRepeatedHashvalue>(encodingScheme1, sym, i, PhraseLenOffset, LFpartialSum, groupMarks, cmpMarksSoFar, hashValues, initFreq, inputBytes, hashMarks, phraseFreq);
             symHashMarks.push_back(hashMarks);
             if (sym > 0) {
                 StreamSet * const combinedSymHashMarks = P->CreateStreamSet(1);
@@ -210,10 +211,14 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
                 cmpMarksSoFar = combinedSymHashMarks;
                 if (i == startLgIdx) allHashMarks.push_back(cmpMarksSoFar);
             }
-            // disable collision handling; resolves single-threaded execution errors
-            // hashValues = hashValuesUpdated;
+            if (sym == 0) {
+                hashValues = phraseFreq;
+                // allHashValues[sym] = phraseFreq; // use this in the next kernel to decide between coinciding 1 and 2- sym phrases
+            }
+            else {
+                initFreq = phraseFreq;
+            }
         }
-        // allHashValues[sym] = hashValues;
         if (sym == 0) {
             StreamSet * const combinedSymHashMarks = P->CreateStreamSet(1);
             P->CreateKernelCall<StreamsMerge>(symHashMarks, combinedSymHashMarks);
