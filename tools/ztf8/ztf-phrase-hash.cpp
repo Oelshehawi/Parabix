@@ -88,9 +88,9 @@ EncodingInfo encodingScheme1(8,
 #endif
 EncodingInfo encodingScheme1(8,
                              {{4, 4, 2, 0xC0, 8, 0},
-                              {5, 8, 2, 0xC8, 8, 0},
-                              {9, 16, 3, 0xE0, 8, 0},
-                              {17, 32, 4, 0xF0, 8, 0}, // change encoding bytes to 3?
+                              {5, 8, 2, 0xD0, 8, 0},
+                              {9, 16, 3, 0xE8, 8, 0},
+                             {17, 32, 4, 0xF0, 8, 0},
                              });
 ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
     auto & b = driver.getBuilder();

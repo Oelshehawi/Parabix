@@ -36,13 +36,16 @@ public:
     unsigned prefixLengthOffset(unsigned lgth) const;
     unsigned prefixLengthMaskBits(unsigned lgth, unsigned numSym) const;
     unsigned getPfxBase(unsigned groupNo, unsigned numSym) const;
-    unsigned lastSuffixBase(unsigned groupNo) const;
-    unsigned lastSuffixShiftBits(unsigned groupNo) const;
+    unsigned lastSuffixBase(unsigned groupNo, unsigned numSym) const;
+    unsigned secLastSuffixBase(unsigned groupNo, unsigned numSym) const;
+    unsigned lastSuffixShiftBits(unsigned groupNo, unsigned numSym) const;
     unsigned lastSuffixHashBits(unsigned numSym, unsigned groupNo) const;
-    unsigned getSubtableSize(unsigned groupNo) const;
-    unsigned getFreqSubtableSize(unsigned groupNo) const;
+    unsigned secLastSuffixHashBits(unsigned numSym, unsigned groupNo) const;
+    unsigned secLastSuffixShiftBits(unsigned numSym, unsigned groupNo) const; // unused?
+    unsigned getSubtableSize(unsigned groupNo, unsigned numSym) const;
+    unsigned getFreqSubtableSize(unsigned groupNo, unsigned numSym) const;
     unsigned getPhraseExtensionBits(unsigned groupNo, unsigned enc_scheme) const;
-    unsigned tableSizeBits(unsigned groupNo) const;
+    unsigned tableSizeBits(unsigned groupNo, unsigned numSym) const;
     unsigned getHashBytes(unsigned groupNo) const;
     std::string uniqueSuffix() const;
 };

@@ -336,16 +336,8 @@ void ZTF_PhraseDecodeLengths::generatePabloMethod() {
         }
         unsigned next_base = 0;
         unsigned next_base_divided = 0;
-        if(mEncodingScheme.byLength.size() == 5) {
-            if (i < 2) {
-                next_base = base + 8;
-            }
-            else {
-                next_base = base + 16;
-            }
-        }
         if(mEncodingScheme.byLength.size() == 4) {
-            if (i == 0) {
+            if (i == 0 || i == 2) {
                 next_base = base + 8;
             }
             else {
@@ -381,8 +373,14 @@ void ZTF_PhraseDecodeLengths::generatePabloMethod() {
             groupStreams[i+enc_len] = curGroupStream_5_8;
         }
         groupStreams[i] = curGroupStream;
+        PabloAST * lastGroupStream = pb.createZeroes();
+        lastGroupStream = pb.createOr(lastGroupStream, curGroupStream);
         for (unsigned j = 2; j < groupInfo.encoding_bytes; j++) {
-            groupStreams[i] = pb.createAnd(pb.createAdvance(groupStreams[i], 1), ASCII);
+            if (i == 3) {
+                lastGroupStream = pb.createAnd(pb.createAdvance(lastGroupStream, 1), suffix_80_BF);
+            }
+            if (j < 3)
+                groupStreams[i] = pb.createAnd(pb.createAdvance(groupStreams[i], 1), ASCII);
             if (j+1 == groupInfo.encoding_bytes) {
                 // PFX 00-7F{1,2} 80-BF
                 unsigned idx = i+enc_len;
@@ -391,10 +389,19 @@ void ZTF_PhraseDecodeLengths::generatePabloMethod() {
                     (mEncodingScheme.byLength.size() == 4 && idx == 7)) {
                     curGroupStream = pb.createAnd(curGroupStream, allInvalidBoundaryCodeword);
                 }
-                groupStreams[i+enc_len] = curGroupStream;
+                if (i == 3) {
+                    lastGroupStream = pb.createAnd(lastGroupStream, allInvalidBoundaryCodeword);
+                    groupStreams[i] = pb.createAnd(pb.createAdvance(groupStreams[i], 1), suffix_80_BF);
+                    groupStreams[i] = pb.createAnd(groupStreams[i], pb.createNot(lastGroupStream)); // remove 2-sym phrases
+                    groupStreams[idx] = lastGroupStream;
+                }
+                else {
+                    groupStreams[idx] = curGroupStream;
+                }
                 //pb.createOr(groupStreams[i], curGroupStream);
             }
         }
+        // unused
         if((mEncodingScheme.byLength.size() == 5) && (i == 4 || i == 9)) {
             groupStreams[i] = pb.createAnd(groupStreams[i], allInvalidBoundaryCodeword);
         }
@@ -621,7 +628,7 @@ void ZTF_PhraseExpansionDecoder::generatePabloMethod() {
     hashTableSpan = pb.createOr3(hashTableSpan, hashTableBoundaryEndFinal, toEliminate);
 
     for (unsigned i = 2; i < mEncodingScheme.maxEncodingBytes(); i++) {
-        PabloAST * ASCII_lookahead_multibyte = pb.createAnd(ASCII_lookahead, pb.createNot(pb.createLookahead(basis[7], pb.getInteger(i))));
+        PabloAST * ASCII_lookahead_multibyte = pb.createAnd(ASCII_lookahead, pb.createNot(pb.createLookahead(basis[7], pb.getInteger(i)))); // [1] 00-7F 00-7F; [2] 00-7F 00-7F 00-7F 
         ASCII_lookaheads.push_back(ASCII_lookahead_multibyte);
         //pb.createDebugPrint(pb.createLookahead(basis[7], pb.getInteger(i)), "ASCII_lookahead_multibyte");
     }
@@ -644,7 +651,7 @@ void ZTF_PhraseExpansionDecoder::generatePabloMethod() {
         6    |  0xD1, 0xD5, 0xD9, 0xDD  } - base = 1,5,9,13  0001 0101 1001 1101
         7    |  0xD2, 0xD6, 0xDA, 0xDE  } - base = 2,6,10,14 0010 0110 1010 1110
         8    |  0xD3, 0xD7, 0xDB, 0xDF  } - base = 3,7,11,15 0011 0111 1011 1111
-        9-16 |  0xE0 - 0xEF (3-bytes)   } - lo - encoding_bytes = 9 - 3 = 6
+        9-16 |  0xE8 - 0xEF (3-bytes)   } - lo - encoding_bytes = 9 - 3 = 6
                                             length = low 3 bits + (lo - encoding_bytes)
         17-32|  0xF0 - 0xFF (4-bytes)   } - lo - encoding_bytes = 17 - 4 = 13
                                             length = pfx-base + (lo - encoding_bytes)
@@ -659,18 +666,12 @@ void ZTF_PhraseExpansionDecoder::generatePabloMethod() {
         unsigned next_base;
         PabloAST * inGroup = pb.createZeroes();
         PabloAST * groupRange = pb.createZeroes();
-        unsigned two_byte_cw_end = 3;
-        unsigned pfx_jump_8 = 2;
-        unsigned lookAhead1= 2;
-        unsigned lookAhead2 = 3;
-        if (mEncodingScheme.byLength.size() == 4) {
-            two_byte_cw_end = 2;
-            pfx_jump_8 = 1;
-            lookAhead1 = 1;
-            lookAhead2 = 2;
-        }
+        unsigned two_byte_cw_end = 2;
+        unsigned pfx_jump_8 = 1;
+        unsigned lookAhead1 = 1;
+        unsigned lookAhead2 = 2;
         if (i < two_byte_cw_end) {
-            if (i < pfx_jump_8) {
+            if (i == 0) {
                 next_base = base + 8;
                 groupRange = pb.createAnd(bnc.UGE(basis, base), bnc.ULT(basis, next_base));
                 inGroup = pb.createOr(inGroup, pb.createAnd(ASCII_lookaheads[0], groupRange));
@@ -689,18 +690,22 @@ void ZTF_PhraseExpansionDecoder::generatePabloMethod() {
             toInsert = bnc.AddModular(relative, lo - groupInfo.encoding_bytes);
         }
         else {
-            next_base = base + 16;
+            if (i == 2) next_base = base + 8;
+            else next_base = base + 16;
             groupRange = pb.createAnd(bnc.UGE(basis, base), bnc.ULT(basis, next_base));
-            PabloAST * lookahead_accum = pb.createOr(ASCII_lookaheads[i-lookAhead1], sfx_80_BF_lookaheads[i-lookAhead2]);
-            inGroup = pb.createOr(inGroup, pb.createAnd(lookahead_accum, groupRange));
+            PabloAST * lookahead_accum = pb.createZeroes();
             //pb.createDebugPrint(inGroup, "inGroup["+std::to_string(i)+"]");
             if (i == two_byte_cw_end) {
+                lookahead_accum = pb.createOr3(lookahead_accum, ASCII_lookaheads[i-lookAhead1], sfx_80_BF_lookaheads[i-lookAhead2]);
+                inGroup = pb.createOr(inGroup, pb.createAnd(lookahead_accum, groupRange));
                 BixNum diff = bnc.SubModular(basis, base); // 0,8; 1,9; 2,10; etc...
                 for (unsigned extractIdx = 0; extractIdx < 3; extractIdx++) {
                     relative[extractIdx] = pb.createOr(relative[extractIdx], diff[extractIdx]);
                 }
             }
             else {
+                lookahead_accum = pb.createOr3(lookahead_accum, ASCII_lookaheads[1], pb.createOr(sfx_80_BF_lookaheads[0], sfx_80_BF_lookaheads[1]));
+                inGroup = pb.createOr(inGroup, pb.createAnd(lookahead_accum, groupRange));
                 BixNum diff = bnc.SubModular(basis, base); // SubModular range (0-7)
                 for (unsigned extractIdx = 0; extractIdx < 4; extractIdx++) { // extract low 4 bits
                     relative[extractIdx] = pb.createOr(relative[extractIdx], diff[extractIdx]);

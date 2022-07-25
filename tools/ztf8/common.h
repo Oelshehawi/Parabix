@@ -30,11 +30,14 @@ struct LengthGroupParameters {
     LengthGroupInfo groupInfo;
     Constant * MAX_HASH_BITS;
     Constant * HASH_SHIFT_BITS;
+    Constant * SEC_LAST_SFX;
     Constant * SUFFIX_BITS;
     Constant * SUFFIX_MASK;
     Constant * LAST_SUFFIX_BASE;
+    Constant * SEC_LAST_SUFFIX_BASE;
     Constant * LAST_SUFFIX_SHIFT_BITS;
     Constant * LAST_SUFFIX_MASK;
+    Constant * SEC_LAST_SUFFIX_MASK;
     unsigned const groupHalfLength;
     Type * halfLengthTy;
     Type * halfSymPtrTy;
@@ -69,7 +72,7 @@ struct LengthGroupParameters {
 };
 
 unsigned hashTableSize(LengthGroupInfo g);
-unsigned phraseHashSubTableSize(EncodingInfo encodingScheme, unsigned groupNo);
+unsigned phraseHashSubTableSize(EncodingInfo encodingScheme, unsigned groupNo, unsigned numSym);
 unsigned phraseVectorSize(EncodingInfo encodingScheme, unsigned groupNo);
 unsigned phraseHashTableSize(LengthGroupInfo g);
 unsigned freqTableSize(LengthGroupInfo g);

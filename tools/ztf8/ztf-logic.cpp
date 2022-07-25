@@ -96,10 +96,9 @@ unsigned EncodingInfo::prefixLengthMaskBits(unsigned lgth, unsigned numSym) cons
             case 0: pfx_bits = g.encoding_bytes + 1;
             case 1: pfx_bits = g.encoding_bytes;
             case 2: pfx_bits = 1;
-            case 3: pfx_bits = 0;
+            case 3: pfx_bits = 1;
             default: pfx_bits = 0;
         }
-        if (numSym == 1 && groupNo == 1) return 1;
         return pfx_bits;
     }
 }
@@ -109,21 +108,38 @@ unsigned EncodingInfo::getPfxBase(unsigned groupNo, unsigned numSym) const {
     if (groupNo == 1 && numSym == 0) return g.prefix_base + 8;
     return g.prefix_base;
 }
-unsigned EncodingInfo::lastSuffixBase(unsigned groupNo) const {
+
+unsigned EncodingInfo::lastSuffixBase(unsigned groupNo, unsigned numSym) const {
     if (byLength.size() == 5 && groupNo > 2) {
         return 128;
     }
-    if (byLength.size() == 4 && groupNo > 1) {
+    if (byLength.size() == 4) {
+        if (numSym == 0 && groupNo > 2) return 128;
+        if (numSym == 1 && groupNo > 1) return 128;
+    }
+    return 0;
+}
+
+unsigned EncodingInfo::secLastSuffixBase(unsigned groupNo, unsigned numSym) const {
+    if (numSym > 0 && groupNo > 2) {
         return 128;
     }
     return 0;
 }
 
-unsigned EncodingInfo::lastSuffixShiftBits(unsigned groupNo) const {
+unsigned EncodingInfo::lastSuffixShiftBits(unsigned groupNo, unsigned numSym) const {
     if (byLength.size() == 5 && groupNo > 2) {
         return 6;
     }
-    if (byLength.size() == 4 && groupNo > 1) {
+    if (byLength.size() == 4) {
+        if (numSym == 0 && groupNo > 2) return 6;
+        if (numSym == 1 && groupNo > 1) return 6;
+    }
+    return 7;
+}
+
+unsigned EncodingInfo::secLastSuffixShiftBits(unsigned numSym, unsigned groupNo) const { // unused?
+    if (numSym > 0 && groupNo > 0) {
         return 6;
     }
     return 7;
@@ -138,35 +154,77 @@ unsigned EncodingInfo::lastSuffixHashBits(unsigned numSym, unsigned groupNo) con
             return 6;
         }
     }
+    else {
+        if (byLength.size() == 4 && groupNo > 2) {
+            return 6;
+        }
+    }
     return 7;
 }
 
-unsigned EncodingInfo::getSubtableSize(unsigned groupNo) const {
-    LengthGroupInfo g = byLength[groupNo];
-    unsigned shift_bits = byLength.size() - (groupNo + 1);
-    unsigned pfx_avail = 1U << shift_bits;
-    unsigned suffix_space = 1UL << 7;
-    unsigned subTblSize = 1;
-    unsigned e_bytes = g.encoding_bytes;
-    unsigned enc_bytes = std::min(2U, e_bytes-1);
-    for(unsigned i = 0; i < enc_bytes; i++) {
-        subTblSize *= suffix_space;
+unsigned EncodingInfo::secLastSuffixHashBits(unsigned numSym, unsigned groupNo) const {
+    if (numSym > 0 && groupNo > 2) {
+        return 6;
     }
-    return pfx_avail * subTblSize * g.hi;
+    return 7;
 }
 
-unsigned EncodingInfo::getFreqSubtableSize(unsigned groupNo) const {
+unsigned EncodingInfo::getSubtableSize(unsigned groupNo, unsigned numSym) const {
     LengthGroupInfo g = byLength[groupNo];
-    unsigned shift_bits = byLength.size() - (groupNo + 1);
-    unsigned pfx_avail = 1U << shift_bits;
-    unsigned suffix_space = 1UL << 7;
     unsigned subTblSize = 1;
-    unsigned e_bytes = g.encoding_bytes;
-    unsigned enc_bytes = std::min(2U, e_bytes-1);
-    for(unsigned i = 0; i < enc_bytes; i++) {
-        subTblSize *= suffix_space;
+    if (numSym == 0) {
+        switch(groupNo) {
+            case 0: subTblSize = 1024;
+            break;
+            case 1: subTblSize = 32768;
+            break;
+            case 2: subTblSize = 16384;
+            break;
+            case 3: subTblSize = 16384;
+            break;
+        }
     }
-    return pfx_avail * subTblSize;
+    else {
+        switch(groupNo) {
+            case 0: subTblSize = 1024;
+            break;
+            case 1: subTblSize = 16384;
+            break;
+            case 2: subTblSize = 8192;
+            break;
+            case 3: subTblSize = 8192;
+            break;
+        }
+    }
+    return subTblSize * g.hi;
+}
+
+unsigned EncodingInfo::getFreqSubtableSize(unsigned groupNo, unsigned numSym) const {
+    LengthGroupInfo g = byLength[groupNo];
+    if (numSym == 0) {
+        switch(groupNo) {
+            case 0: return 1024;
+            break;
+            case 1: return 32768;
+            break;
+            case 2: return 16384;
+            break;
+            case 3: return 16384;
+            break;
+        }
+    }
+    else {
+        switch(groupNo) {
+            case 0: return 1024;
+            break;
+            case 1: return 16384;
+            break;
+            case 2: return 8192;
+            break;
+            case 3: return 8192;
+            break;
+        }
+    }
 }
 
 unsigned EncodingInfo::getPhraseExtensionBits(unsigned groupNo, unsigned enc_scheme) const {
@@ -176,7 +234,7 @@ unsigned EncodingInfo::getPhraseExtensionBits(unsigned groupNo, unsigned enc_sch
     return std::min(g.hi - g.lo, groupNo+1);
 }
  
-unsigned EncodingInfo::tableSizeBits(unsigned groupNo) const {
+unsigned EncodingInfo::tableSizeBits(unsigned groupNo, unsigned numSym) const {
     if (byLength.size() == 5) {
         switch(groupNo) {
             case 0: return 13;
@@ -188,12 +246,23 @@ unsigned EncodingInfo::tableSizeBits(unsigned groupNo) const {
         }
     }
     else {
-        switch(groupNo) {
-            case 0: return 10;
-            case 1: return 9;
-            case 2: return 15;
-            case 3: return 14;
-            default: return 0;
+        if(numSym == 0) {
+            switch(groupNo) {
+                case 0: return 10;//-1;
+                case 1: return 15;//-1;
+                case 2: return 14;//-1;
+                case 3: return 14;//-1;
+                default: return 0;
+            }
+        }
+        else {
+            switch(groupNo) {
+                case 0: return 10;//-1;
+                case 1: return 14;//-1;
+                case 2: return 13;//-1;
+                case 3: return 13;//-1;
+                default: return 0;
+            }
         }
     }
 }
