@@ -68,10 +68,10 @@ void UpdateNextHashMarks::generatePabloMethod() {
         }
     }
     if (mEncodingScheme.byLength.size() == 4) {
-        if (mGroupNo < 2) {
+        if (mGroupNo < 1) {
             advPos = 2;
         }
-        else if (mGroupNo == 2) {
+        else if (mGroupNo < 3) {
             advPos = 3;
         }
         else { //mGroupNo = 4
@@ -330,21 +330,16 @@ void ZTF_PhraseDecodeLengths::generatePabloMethod() {
         }
         LengthGroupInfo groupInfo = mEncodingScheme.byLength[i];
         unsigned base = groupInfo.prefix_base;
-        unsigned base_divided = base;
-        if (i == 1) {
-            base += 8;
-        }
         unsigned next_base = 0;
-        unsigned next_base_divided = 0;
-        if(mEncodingScheme.byLength.size() == 4) {
-            if (i == 0 || i == 2) {
+            if (i == 0) {
+                next_base = base + 32;
+            }
+            else if (i < 3) {
                 next_base = base + 8;
             }
             else {
                 next_base = base + 16;
             }
-            if (i == 1) next_base_divided = base_divided + 8;
-        }
         PabloAST * inGroup = pb.createAnd(bnc.UGE(basis, base), bnc.ULT(basis, next_base));
 /*      curGroupStream =>
             0 -> C0-C7 00-7F
@@ -367,11 +362,6 @@ void ZTF_PhraseDecodeLengths::generatePabloMethod() {
             idx = 0, 4, 1, 5, 2, 6, 3, 7
 */
         PabloAST * curGroupStream = pb.createAnd(pb.createAdvance(inGroup, 1), ASCII); // PFX 00-7F
-        if(i == 1) {
-            PabloAST * inGroup_5_8 = pb.createAnd(bnc.UGE(basis, base_divided), bnc.ULT(basis, next_base_divided));
-            PabloAST * curGroupStream_5_8 = pb.createAnd(pb.createAdvance(inGroup_5_8, 1), ASCII);
-            groupStreams[i+enc_len] = curGroupStream_5_8;
-        }
         groupStreams[i] = curGroupStream;
         PabloAST * lastGroupStream = pb.createZeroes();
         lastGroupStream = pb.createOr(lastGroupStream, curGroupStream);
@@ -645,12 +635,11 @@ void ZTF_PhraseExpansionDecoder::generatePabloMethod() {
         10000000 - 10111111
     */
     /*
-        3    |  0xC0-0xC7               (192-199) 0000 0001 0010 0011 0100 0101 0110 0111
-        4    |  0xC8-0xCF               (200-208) 1000 1001 1010 1011 1100 1101 1110 1111
-        5    |  0xD0, 0xD4, 0xD8, 0xDC  } - base = 0,4,8,12  0000 0100 1000 1100 // low 2 bits + (lo - encoding_bytes)
-        6    |  0xD1, 0xD5, 0xD9, 0xDD  } - base = 1,5,9,13  0001 0101 1001 1101
-        7    |  0xD2, 0xD6, 0xDA, 0xDE  } - base = 2,6,10,14 0010 0110 1010 1110
-        8    |  0xD3, 0xD7, 0xDB, 0xDF  } - base = 3,7,11,15 0011 0111 1011 1111
+        4    |  0xC0-0xDF               (192-223) 1100 0000 ... 1100 1111 - 1101 0000 ... 1101 1111
+        5    |  0xE0, 0xE4  (3-bytes)   } - base = 0, 4 -> 0000 0100 // low 2 bits + (lo - encoding_bytes)
+        6    |  0xE1, 0xE5              } - base = 1, 5 -> 0001 0101
+        7    |  0xE2, 0xE6              } - base = 2, 6 -> 0010 0110
+        8    |  0xE3, 0xE7              } - base = 3, 7 -> 0011 0111
         9-16 |  0xE8 - 0xEF (3-bytes)   } - lo - encoding_bytes = 9 - 3 = 6
                                             length = low 3 bits + (lo - encoding_bytes)
         17-32|  0xF0 - 0xFF (4-bytes)   } - lo - encoding_bytes = 17 - 4 = 13
@@ -672,15 +661,16 @@ void ZTF_PhraseExpansionDecoder::generatePabloMethod() {
         unsigned lookAhead2 = 2;
         if (i < two_byte_cw_end) {
             if (i == 0) {
-                next_base = base + 8;
+                next_base = base + 32;
                 groupRange = pb.createAnd(bnc.UGE(basis, base), bnc.ULT(basis, next_base));
                 inGroup = pb.createOr(inGroup, pb.createAnd(ASCII_lookaheads[0], groupRange));
                 //count.push_back(inGroup);
             }
             else {
-                next_base = base + 16;
+                next_base = base + 8;
+                PabloAST * lookahead_accum = pb.createOr(ASCII_lookaheads[i], sfx_80_BF_lookaheads[i-lookAhead1]);
                 groupRange = pb.createAnd(bnc.UGE(basis, base), bnc.ULT(basis, next_base));
-                inGroup = pb.createOr(inGroup, pb.createAnd(ASCII_lookaheads[0], groupRange));
+                inGroup = pb.createOr(inGroup, pb.createAnd(lookahead_accum, groupRange));
                 BixNum diff = bnc.SubModular(basis, base); // SubModular range (0-7)
                 for (unsigned extractIdx = 0; extractIdx < 2; extractIdx++) { // extract low 2 bits
                     relative[extractIdx] = pb.createOr(relative[extractIdx], diff[extractIdx]);
@@ -696,7 +686,7 @@ void ZTF_PhraseExpansionDecoder::generatePabloMethod() {
             PabloAST * lookahead_accum = pb.createZeroes();
             //pb.createDebugPrint(inGroup, "inGroup["+std::to_string(i)+"]");
             if (i == two_byte_cw_end) {
-                lookahead_accum = pb.createOr3(lookahead_accum, ASCII_lookaheads[i-lookAhead1], sfx_80_BF_lookaheads[i-lookAhead2]);
+                lookahead_accum = pb.createOr3(lookahead_accum, ASCII_lookaheads[i-lookAhead1] /* 1 */, sfx_80_BF_lookaheads[i-lookAhead2] /* 0 */);
                 inGroup = pb.createOr(inGroup, pb.createAnd(lookahead_accum, groupRange));
                 BixNum diff = bnc.SubModular(basis, base); // 0,8; 1,9; 2,10; etc...
                 for (unsigned extractIdx = 0; extractIdx < 3; extractIdx++) {

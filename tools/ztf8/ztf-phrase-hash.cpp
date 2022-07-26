@@ -88,7 +88,7 @@ EncodingInfo encodingScheme1(8,
 #endif
 EncodingInfo encodingScheme1(8,
                              {{4, 4, 2, 0xC0, 8, 0},
-                              {5, 8, 2, 0xD0, 8, 0},
+                              {5, 8, 3, 0xE0, 8, 0},
                               {9, 16, 3, 0xE8, 8, 0},
                              {17, 32, 4, 0xF0, 8, 0},
                              });
@@ -319,10 +319,7 @@ ztfHashDecmpFunctionType ztfHash_decompression_gen (CPUDriver & driver) {
     StreamSet * u8bytes = ztfHash_u8bytes;
     for(unsigned sym = 0; sym < SymCount; sym++) {
         unsigned startIdx = 0;
-        if (sym > 0) {
-            startIdx = 3;
-            if (encodingScheme1.byLength.size() == 4) startIdx = 1;
-        }
+        if (sym > 0) startIdx = 1;
         for (unsigned i = startIdx; i < n; i++) {
             StreamSet * const hashGroupMarks = P->CreateStreamSet(1);
 

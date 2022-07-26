@@ -47,6 +47,7 @@ public:
     unsigned getPhraseExtensionBits(unsigned groupNo, unsigned enc_scheme) const;
     unsigned tableSizeBits(unsigned groupNo, unsigned numSym) const;
     unsigned getHashBytes(unsigned groupNo) const;
+    unsigned getRange(unsigned groupNo) const;
     std::string uniqueSuffix() const;
 };
 

@@ -61,7 +61,7 @@ LengthGroupParameters::LengthGroupParameters(BuilderRef b, EncodingInfo encoding
     HALF_LENGTH(b->getSize(groupHalfLength)),
     LO(b->getSize(groupInfo.lo)),
     HI(b->getSize(groupInfo.hi)),
-    RANGE(b->getSize((groupInfo.hi - groupInfo.lo) + 1UL)),
+    RANGE(b->getSize(encodingScheme.getRange(groupNo))),
     // All subtables are sized the same.
     SUBTABLE_SIZE(b->getSize((1UL << groupInfo.hash_bits) * groupInfo.hi)),
     PHRASE_SUBTABLE_SIZE(b->getSize(encodingScheme.getSubtableSize(groupNo, numSym))),
@@ -79,8 +79,8 @@ LengthGroupParameters::LengthGroupParameters(BuilderRef b, EncodingInfo encoding
     LENGTH_MASK(b->getSize(2UL * groupHalfLength - 1UL)),
     EXTENSION_MASK(b->getSize((1UL << groupInfo.length_extension_bits) - 1UL)),
     TABLE_MASK(b->getSize((1U << encodingScheme.tableSizeBits(groupNo, numSym)) -1)),
-    EXTRA_BITS(b->getSize(encodingScheme.tableSizeBits(groupNo, numSym) % 7U)),
-    EXTRA_BITS_MASK(b->getSize((1UL << (encodingScheme.tableSizeBits(groupNo, numSym) % 7U)) - 1UL)),
+    EXTRA_BITS(b->getSize(encodingScheme.tableSizeBits(groupNo, /*numSym = */ 0) % 7U)),
+    EXTRA_BITS_MASK(b->getSize((1UL << (encodingScheme.tableSizeBits(groupNo, /*numSym = */ 0) % 7U)) - 1UL)),
     TABLE_IDX_MASK(b->getSize((1U << (8 * groupInfo.encoding_bytes)) -1)),
     FREQ_TABLE_MASK(b->getSize((1UL << (18U - groupNo)) - 1)) {
         // llvm::errs() << groupNo << " ->TABLE_MASK : " << ((1U << encodingScheme.tableSizeBits(groupNo)) -1 ) << "\n";
@@ -97,7 +97,7 @@ unsigned hashTableSize(LengthGroupInfo g) {
 unsigned phraseHashSubTableSize(EncodingInfo encodingScheme, unsigned groupNo, unsigned numSym) {
     if (numSym == 0) {
         switch(groupNo) {
-            case 0: return 1024;
+            case 0: return 4096;
             break;
             case 1: return 32768;
             break;
@@ -109,7 +109,7 @@ unsigned phraseHashSubTableSize(EncodingInfo encodingScheme, unsigned groupNo, u
     }
     else {
         switch(groupNo) {
-            case 0: return 1024;
+            case 0: return 0; // not done
             break;
             case 1: return 16384;
             break;

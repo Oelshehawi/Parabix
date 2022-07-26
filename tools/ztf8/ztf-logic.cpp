@@ -91,21 +91,16 @@ unsigned EncodingInfo::prefixLengthMaskBits(unsigned lgth, unsigned numSym) cons
         }
     }
     else {
-        unsigned pfx_bits = 0;
         switch(groupNo) {
-            case 0: pfx_bits = g.encoding_bytes + 1;
-            case 1: pfx_bits = g.encoding_bytes;
-            case 2: pfx_bits = 1;
-            case 3: pfx_bits = 1;
-            default: pfx_bits = 0;
+            case 0: return 5;
+            case 1: return 1;
+            default: return 0;
         }
-        return pfx_bits;
     }
 }
 
 unsigned EncodingInfo::getPfxBase(unsigned groupNo, unsigned numSym) const {
     auto g = byLength[groupNo];
-    if (groupNo == 1 && numSym == 0) return g.prefix_base + 8;
     return g.prefix_base;
 }
 
@@ -115,7 +110,7 @@ unsigned EncodingInfo::lastSuffixBase(unsigned groupNo, unsigned numSym) const {
     }
     if (byLength.size() == 4) {
         if (numSym == 0 && groupNo > 2) return 128;
-        if (numSym == 1 && groupNo > 1) return 128;
+        if (numSym == 1 && groupNo > 0) return 128;
     }
     return 0;
 }
@@ -133,13 +128,13 @@ unsigned EncodingInfo::lastSuffixShiftBits(unsigned groupNo, unsigned numSym) co
     }
     if (byLength.size() == 4) {
         if (numSym == 0 && groupNo > 2) return 6;
-        if (numSym == 1 && groupNo > 1) return 6;
+        if (numSym == 1 && groupNo > 0) return 6;
     }
     return 7;
 }
 
-unsigned EncodingInfo::secLastSuffixShiftBits(unsigned numSym, unsigned groupNo) const { // unused?
-    if (numSym > 0 && groupNo > 0) {
+unsigned EncodingInfo::secLastSuffixShiftBits(unsigned numSym, unsigned groupNo) const {
+    if (numSym > 0 && groupNo > 2) {
         return 6;
     }
     return 7;
@@ -150,7 +145,7 @@ unsigned EncodingInfo::lastSuffixHashBits(unsigned numSym, unsigned groupNo) con
         if (byLength.size() == 5 && groupNo > 2) {
             return 6;
         }
-        if (byLength.size() == 4 && groupNo > 1) {
+        if (byLength.size() == 4 && groupNo > 0) {
             return 6;
         }
     }
@@ -171,39 +166,13 @@ unsigned EncodingInfo::secLastSuffixHashBits(unsigned numSym, unsigned groupNo) 
 
 unsigned EncodingInfo::getSubtableSize(unsigned groupNo, unsigned numSym) const {
     LengthGroupInfo g = byLength[groupNo];
-    unsigned subTblSize = 1;
-    if (numSym == 0) {
-        switch(groupNo) {
-            case 0: subTblSize = 1024;
-            break;
-            case 1: subTblSize = 32768;
-            break;
-            case 2: subTblSize = 16384;
-            break;
-            case 3: subTblSize = 16384;
-            break;
-        }
-    }
-    else {
-        switch(groupNo) {
-            case 0: subTblSize = 1024;
-            break;
-            case 1: subTblSize = 16384;
-            break;
-            case 2: subTblSize = 8192;
-            break;
-            case 3: subTblSize = 8192;
-            break;
-        }
-    }
-    return subTblSize * g.hi;
+    return getFreqSubtableSize(groupNo, numSym) * g.hi;
 }
 
 unsigned EncodingInfo::getFreqSubtableSize(unsigned groupNo, unsigned numSym) const {
-    LengthGroupInfo g = byLength[groupNo];
     if (numSym == 0) {
         switch(groupNo) {
-            case 0: return 1024;
+            case 0: return 4096;
             break;
             case 1: return 32768;
             break;
@@ -215,7 +184,7 @@ unsigned EncodingInfo::getFreqSubtableSize(unsigned groupNo, unsigned numSym) co
     }
     else {
         switch(groupNo) {
-            case 0: return 1024;
+            case 0: return 0; // not done
             break;
             case 1: return 16384;
             break;
@@ -248,19 +217,19 @@ unsigned EncodingInfo::tableSizeBits(unsigned groupNo, unsigned numSym) const {
     else {
         if(numSym == 0) {
             switch(groupNo) {
-                case 0: return 10;//-1;
-                case 1: return 15;//-1;
-                case 2: return 14;//-1;
-                case 3: return 14;//-1;
+                case 0: return 12;
+                case 1: return 15;
+                case 2: return 14;
+                case 3: return 14;
                 default: return 0;
             }
         }
         else {
             switch(groupNo) {
-                case 0: return 10;//-1;
-                case 1: return 14;//-1;
-                case 2: return 13;//-1;
-                case 3: return 13;//-1;
+                case 0: return 0; //not done
+                case 1: return 14;
+                case 2: return 13;
+                case 3: return 13;
                 default: return 0;
             }
         }
@@ -274,6 +243,10 @@ unsigned EncodingInfo::getHashBytes(unsigned groupNo) const {
         case 2: return 2;
         case 3: return 2;
     }
+}
+
+unsigned EncodingInfo::getRange(unsigned groupNo) const {
+   return (groupNo == 1) ? 4 : 1;
 }
 
 Bindings WordMarkKernelOutputBindings(StreamSet * WordMarks, StreamSet * possibleSymStart) {
