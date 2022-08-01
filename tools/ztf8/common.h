@@ -105,6 +105,12 @@ std::vector<llvm::Value *> initializeCompressionMasks11(Kernel::BuilderRef b,
                                                     unsigned maskCount,
                                                     llvm::Value * readStrideBlockOffset,
                                                     llvm::BasicBlock * strideMasksReady);
+std::vector<llvm::Value *> initializeCompressionMasks2_init(Kernel::BuilderRef b,
+                                                    struct ScanWordParameters & sw,
+                                                    llvm::Constant * sz_BLOCKS_PER_STRIDE,
+                                                    unsigned maskCount,
+                                                    llvm::Value * strideBlockOffset,
+                                                    llvm::BasicBlock * strideMasksReady);
 std::vector<llvm::Value *> initializeCompressionMasks2(Kernel::BuilderRef b,
                                                     struct ScanWordParameters & sw,
                                                     llvm::Constant * sz_BLOCKS_PER_STRIDE,

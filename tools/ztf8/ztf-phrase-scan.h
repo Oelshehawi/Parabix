@@ -43,6 +43,7 @@ public:
                            StreamSet * const initFreq,
                            StreamSet * const byteData,
                            StreamSet * hashMarks,
+                           StreamSet * secHashMarks,
                            StreamSet * hashValuesUpdated,
                            unsigned strideBlocks = 8);
 private:
@@ -66,6 +67,7 @@ public:
                            unsigned offset,
                            StreamSet * lfData,
                            StreamSet * symbolMarks,
+                           StreamSet * secHashMark,
                            StreamSet * hashValues,
                            StreamSet * const byteData,
                            StreamSet * compressionMask,

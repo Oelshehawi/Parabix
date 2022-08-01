@@ -184,6 +184,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
     // P->CreateKernelCall<DebugDisplayKernel>("LFpartialSum", LFpartialSum);
     // Mark all the repeated hashCodes
     std::vector<StreamSet *> allHashMarks;
+    std::vector<StreamSet *> allSecHashMarks;
     StreamSet * const inputBytes = codeUnitStream;
     StreamSet * cmpMarksSoFar = symEnd;
     StreamSet * initFreq = allHashValues[0]; // -> to compare with any overlapping phrase in other group --> useful for 2-sym phrases
@@ -197,14 +198,18 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
             }
         }
         std::vector<StreamSet *> symHashMarks;
+        std::vector<StreamSet *> secHashMarks;
         StreamSet * hashValues = allHashValues[sym];
         for (int i = endIdx; i >= startLgIdx; i--) { // k-sym phrases length range 5-32
             StreamSet * const groupMarks = P->CreateStreamSet(1);
             P->CreateKernelCall<LengthGroupSelector>(encodingScheme1, i, phraseRuns, phraseLenBixnum[sym], phraseLenOverflow[sym]/*overflow*/, groupMarks, PhraseLenOffset);
             StreamSet * const hashMarks = P->CreateStreamSet(1);
+            StreamSet * const sHashMark = P->CreateStreamSet(1);
             StreamSet * const phraseFreq = P->CreateStreamSet(1, 16);
-            P->CreateKernelCall<MarkRepeatedHashvalue>(encodingScheme1, sym, i, PhraseLenOffset, LFpartialSum, groupMarks, cmpMarksSoFar, hashValues, initFreq, inputBytes, hashMarks, phraseFreq);
+            P->CreateKernelCall<MarkRepeatedHashvalue>(encodingScheme1, sym, i, PhraseLenOffset, LFpartialSum, groupMarks, cmpMarksSoFar, hashValues, initFreq, inputBytes, hashMarks, sHashMark, phraseFreq);
+            // P->CreateKernelCall<DebugDisplayKernel>("sHashMark", sHashMark);
             symHashMarks.push_back(hashMarks);
+            secHashMarks.push_back(sHashMark);
             if (sym > 0) {
                 StreamSet * const combinedSymHashMarks = P->CreateStreamSet(1);
                 P->CreateKernelCall<StreamsMerge>(symHashMarks, combinedSymHashMarks);
@@ -224,6 +229,9 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
             P->CreateKernelCall<StreamsMerge>(symHashMarks, combinedSymHashMarks);
             allHashMarks.push_back(combinedSymHashMarks);
         }
+        StreamSet * const combinedSecHashMarks = P->CreateStreamSet(1);
+        P->CreateKernelCall<StreamsMerge>(secHashMarks, combinedSecHashMarks);
+        allSecHashMarks.push_back(combinedSecHashMarks);
     }
 
     StreamSet * u8bytes = codeUnitStream;
@@ -243,10 +251,12 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
             StreamSet * const input_bytes = u8bytes;
             StreamSet * const output_bytes = P->CreateStreamSet(1, 8);
             StreamSet * const groupMarks = P->CreateStreamSet(1);
+            StreamSet * const secHashMark = P->CreateStreamSet(1);
             StreamSet * const codewordMask = P->CreateStreamSet(1);
             P->CreateKernelCall<LengthGroupSelector>(encodingScheme1, i, allHashMarks[sym], phraseLenBixnum[sym], /*phraseLenOverflow[sym]*/ overflow, groupMarks, PhraseLenOffset);
+            P->CreateKernelCall<LengthGroupSelector>(encodingScheme1, i, allSecHashMarks[sym], phraseLenBixnum[sym], /*phraseLenOverflow[sym]*/ overflow, secHashMark, PhraseLenOffset);
             // mask of dictionary codeword positions
-            P->CreateKernelCall<SymbolGroupCompression>(PhraseLen, encodingScheme1, sym, i, PhraseLenOffset, LFpartialSum, groupMarks, allHashValues[sym], input_bytes, extractionMask, output_bytes, codewordMask);
+            P->CreateKernelCall<SymbolGroupCompression>(PhraseLen, encodingScheme1, sym, i, PhraseLenOffset, LFpartialSum, groupMarks, secHashMark, allHashValues[sym], input_bytes, extractionMask, output_bytes, codewordMask);
             extractionMasks.push_back(extractionMask);
             phraseMasks.push_back(codewordMask);
             u8bytes = output_bytes;
