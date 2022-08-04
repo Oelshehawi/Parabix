@@ -158,6 +158,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
     // Calculate k-hashCodes for each symbol. Each hashCode is unique to the number of symbols comprised.
     std::vector<StreamSet *> bixHashes(SymCount);
     std::vector<StreamSet *> allHashValues(SymCount);
+    std::vector<StreamSet *> allHashValuesFinal(SymCount);
     StreamSet * basisStart = u8basis;
     for(unsigned i = 0; i < SymCount; i++) {
         StreamSet * const bixHash = P->CreateStreamSet(encodingScheme1.MAX_HASH_BITS);
@@ -200,6 +201,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
         std::vector<StreamSet *> symHashMarks;
         std::vector<StreamSet *> secHashMarks;
         StreamSet * hashValues = allHashValues[sym];
+        StreamSet * initFreq = allHashValues[sym];
         for (int i = endIdx; i >= startLgIdx; i--) { // k-sym phrases length range 5-32
             StreamSet * const groupMarks = P->CreateStreamSet(1);
             P->CreateKernelCall<LengthGroupSelector>(encodingScheme1, i, phraseRuns, phraseLenBixnum[sym], phraseLenOverflow[sym]/*overflow*/, groupMarks, PhraseLenOffset);
@@ -216,19 +218,14 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
                 cmpMarksSoFar = combinedSymHashMarks;
                 if (i == startLgIdx) allHashMarks.push_back(cmpMarksSoFar);
             }
-            if (sym == 0) {
-                hashValues = phraseFreq;
-                // allHashValues[sym] = phraseFreq; // use this in the next kernel to decide between coinciding 1 and 2- sym phrases
-            }
-            else {
-                initFreq = phraseFreq;
-            }
+            initFreq = phraseFreq;
         }
         if (sym == 0) {
             StreamSet * const combinedSymHashMarks = P->CreateStreamSet(1);
             P->CreateKernelCall<StreamsMerge>(symHashMarks, combinedSymHashMarks);
             allHashMarks.push_back(combinedSymHashMarks);
         }
+        allHashValuesFinal[sym] = initFreq;
         StreamSet * const combinedSecHashMarks = P->CreateStreamSet(1);
         P->CreateKernelCall<StreamsMerge>(secHashMarks, combinedSecHashMarks);
         allSecHashMarks.push_back(combinedSecHashMarks);
@@ -256,7 +253,7 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
             P->CreateKernelCall<LengthGroupSelector>(encodingScheme1, i, allHashMarks[sym], phraseLenBixnum[sym], /*phraseLenOverflow[sym]*/ overflow, groupMarks, PhraseLenOffset);
             P->CreateKernelCall<LengthGroupSelector>(encodingScheme1, i, allSecHashMarks[sym], phraseLenBixnum[sym], /*phraseLenOverflow[sym]*/ overflow, secHashMark, PhraseLenOffset);
             // mask of dictionary codeword positions
-            P->CreateKernelCall<SymbolGroupCompression>(PhraseLen, encodingScheme1, sym, i, PhraseLenOffset, LFpartialSum, groupMarks, secHashMark, allHashValues[sym], input_bytes, extractionMask, output_bytes, codewordMask);
+            P->CreateKernelCall<SymbolGroupCompression>(PhraseLen, encodingScheme1, sym, i, PhraseLenOffset, LFpartialSum, groupMarks, /*secHashMark*/groupMarks, allHashValues[sym], allHashValuesFinal[sym], input_bytes, extractionMask, output_bytes, codewordMask);
             extractionMasks.push_back(extractionMask);
             phraseMasks.push_back(codewordMask);
             u8bytes = output_bytes;

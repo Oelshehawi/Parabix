@@ -82,10 +82,14 @@ LengthGroupParameters::LengthGroupParameters(BuilderRef b, EncodingInfo encoding
     EXTRA_BITS(b->getSize(encodingScheme.tableSizeBits(groupNo, /*numSym = */ 0) % 7U)),
     EXTRA_BITS_MASK(b->getSize((1UL << (encodingScheme.tableSizeBits(groupNo, /*numSym = */ 0) % 7U)) - 1UL)),
     TABLE_IDX_MASK(b->getSize((1U << (8 * groupInfo.encoding_bytes)) -1)),
-    FREQ_TABLE_MASK(b->getSize((1UL << (18U - groupNo)) - 1)) {
-        // llvm::errs() << groupNo << " ->TABLE_MASK : " << ((1U << encodingScheme.tableSizeBits(groupNo)) -1 ) << "\n";
-        // llvm::errs() << groupNo << " ->EXTRA_BITS " << (encodingScheme.tableSizeBits(groupNo) % 7U) << "\n";
-        // llvm::errs() << groupNo << " ->EXTRA_BITS_MASK " << ((1UL << (encodingScheme.tableSizeBits(groupNo) % 7U)) - 1UL) << "\n";
+    FREQ_TABLE_MASK(b->getSize((1UL << (18U - groupNo)) - 1)),
+    SUFFIX1_MASK(b->getSize((1UL << encodingScheme.getSuffixMask(1, groupNo, numSym)) - 1UL)),
+    SUFFIX1_BITS(b->getSize(encodingScheme.getSuffixMask(1, groupNo, numSym))),
+    SUFFIX2_MASK(b->getSize((1UL << encodingScheme.getSuffixMask(2, groupNo, numSym)) - 1UL)),
+    SUFFIX2_BITS(b->getSize(encodingScheme.getSuffixMask(2, groupNo, numSym))),
+    SUFFIX3_MASK(b->getSize((1UL << encodingScheme.getSuffixMask(3, groupNo, numSym)) - 1UL)),
+    SUFFIX3_BITS(b->getSize(encodingScheme.getSuffixMask(3, groupNo, numSym)))
+     {
         assert(groupInfo.hi <= (1UL << (boost::intrusive::detail::floor_log2(groupInfo.lo) + 1UL)));
     }
 
@@ -123,7 +127,7 @@ unsigned phraseHashSubTableSize(EncodingInfo encodingScheme, unsigned groupNo, u
 
 unsigned phraseVectorSize(EncodingInfo encodingScheme, unsigned groupNo) {
     LengthGroupInfo g = encodingScheme.byLength[groupNo];
-    return (1048576 / g.hi);
+    return (1048576 / g.lo);
 }
 unsigned phraseHashTableSize(LengthGroupInfo g) {
     // llvm::errs() << "lo " << g.lo << "phraseHashTableSize " <<  g.hi * (1<<(g.hash_bits + g.encoding_bytes)) << "\n";
@@ -433,7 +437,9 @@ std::vector<Value *> initializeCompressionMasks2(BuilderRef b,
         keyMaskAccum[i]->addIncoming(keyMasks[i], maskInit);
     }
     Value * dictMaskCurPtr = b->CreateBitCast(b->getRawOutputPointer("hashMarks", blockPos), bitBlockPtrTy);
+    Value * secHashMaskCurPtr = b->CreateBitCast(b->getRawOutputPointer("secHashMarks", blockPos), bitBlockPtrTy);
     b->CreateBlockAlignedStore(b->allZeroes(), dictMaskCurPtr);
+    b->CreateBlockAlignedStore(b->allZeroes(), secHashMaskCurPtr);
     Value * const nextBlockNo = b->CreateAdd(blockNo, sz_ONE);
     Value * const nextBlockPos = b->CreateAdd(blockPos, sz_BLOCKWIDTH);
     blockNo->addIncoming(nextBlockNo, maskInit);

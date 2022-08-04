@@ -69,6 +69,7 @@ public:
                            StreamSet * symbolMarks,
                            StreamSet * secHashMark,
                            StreamSet * hashValues,
+                           StreamSet * allHashValuesFinal,
                            StreamSet * const byteData,
                            StreamSet * compressionMask,
                            StreamSet * encodedBytes,

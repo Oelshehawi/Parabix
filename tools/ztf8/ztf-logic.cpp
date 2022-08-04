@@ -249,6 +249,21 @@ unsigned EncodingInfo::getRange(unsigned groupNo) const {
    return (groupNo == 1) ? 4 : 1;
 }
 
+unsigned EncodingInfo::getSuffixMask(unsigned suffixNo, unsigned groupNo, unsigned numSym) const {
+    switch(suffixNo) {
+        case 1: {
+            if (groupNo == 3) return 0; // 1 bit can be used
+            return 7;
+        }
+        case 2: {
+            if(numSym == 1) return 6;
+            return 7;
+        }
+        case 3: {
+            return 6;
+        }
+    }
+}
 Bindings WordMarkKernelOutputBindings(StreamSet * WordMarks, StreamSet * possibleSymStart) {
     if (possibleSymStart == nullptr) return {Binding{"WordMarks", WordMarks}};
     return {Binding{"WordMarks", WordMarks}, Binding{"possibleSymStart", possibleSymStart}};

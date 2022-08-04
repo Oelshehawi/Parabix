@@ -48,6 +48,7 @@ public:
     unsigned tableSizeBits(unsigned groupNo, unsigned numSym) const;
     unsigned getHashBytes(unsigned groupNo) const;
     unsigned getRange(unsigned groupNo) const;
+    unsigned getSuffixMask(unsigned suffixNo, unsigned groupNo, unsigned numSym) const;
     std::string uniqueSuffix() const;
 };
 
