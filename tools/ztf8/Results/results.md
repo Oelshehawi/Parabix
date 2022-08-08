@@ -349,3 +349,32 @@ Suffix space: 00-7F
 |    6443430  |  6.2M     | viwiki.z  |
 |   15228393  |   15M     | zhwiki.z  |
 |  391285124  |  374M     | wiki-all.z|
+
+================================================================================================================================================================
+9.0 Compressed file size vs dictionary size
+* Sym count = 2
+* Do not compress the first occurrence in every segment
+* Uses MarkRepeatedHashvalue: 
+    i. Uses BixHash[i] for 2-sym phrases
+  iii. CheckUnmark for 2-sym phrases commented.
+   iv. Linear probing expand size => b->getSize(0x50)
+    v. Modify minFreqReqForCmp => >= 4 for groupNo 0; >= 2 for other groups
+
+| Filename | Size (MB) | Compressed file (MB) |  Dictionary size (MB)      |
+|---------:|----------:|---------------------:|---------------------------:|
+|Arabic    | 19        | 8.6                  |  2.0                       |
+|English   | 96        | 50                   |  5.2                       |
+|German    | 196       | 98                   |  9.9                       |
+|Greek     | 19        | 7.7                  |  1.8                       |
+|Spanish   | 71        | 35                   |  5.3                       |
+|Persian   | 20        | 7.7                  |  1.6                       |
+|Finnish   | 20        | 9.9                  |  1.8                       |
+|French    | 88        | 42                   |  5.4                       |
+|Indonesian| 15        | 6.5                  |  1.8                       |
+|Japanese  | 54        | 47                   |  1.1                       |
+|Korean    | 13        | 11                   |  0.324                     |
+|Russian   | 57        | 26                   |  5                         |
+|Thai      | 12        | 9.4                  |  0.309                     |
+|Turkish   | 12        | 5.9                  |  1.6                       |
+|Vietnamese| 12        | 4.9                  |  1.3                       |
+|Chinese   | 20        | 14                   |  0.994                     |

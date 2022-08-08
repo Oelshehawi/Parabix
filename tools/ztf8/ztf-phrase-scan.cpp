@@ -162,8 +162,10 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     BasicBlock * const symMaskReady = b->CreateBasicBlock("symMaskReady");
     BasicBlock * const compareOverlappingSymWithinAndAcrossGroups = b->CreateBasicBlock("compareOverlappingSymWithinAndAcrossGroups");
     BasicBlock * const compareOverlappingSymInLastGroup = b->CreateBasicBlock("compareOverlappingSymInLastGroup");
-    BasicBlock * const secHashPhrases = b->CreateBasicBlock("secHashPhrases");
-    BasicBlock * const secHashSymMarked = b->CreateBasicBlock("secHashSymMarked");
+#if 0
+    BasicBlock * const printPhrase = b->CreateBasicBlock("printPhrase");
+    BasicBlock * const proceed = b->CreateBasicBlock("proceed");
+#endif
 
     BasicBlock * const freqCalcPrep = b->CreateBasicBlock("freqCalcPrep");
     BasicBlock * const phraseMaskReady = b->CreateBasicBlock("phraseMaskReady");
@@ -620,7 +622,8 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
 
     Value * phraseFreq = b->CreateZExt(b->CreateLoad(b->getRawOutputPointer("freqUpdated", keyMarkPos)), sizeTy);
     Value * hasGreaterFreq = b->CreateICmpUGT(phraseFreq, globalInitCount1);
-    Value * isPhraseCompressible = b->CreateAnd(b->CreateICmpUGE(phraseFreq, sz_TWO), hasGreaterFreq); // >> CreateICmpUGE gives better compression for arwiki and ruwiki -> 8/2/22-0.1
+    Value * minFreqReqForCmp = b->CreateSelect(b->CreateICmpEQ(mGroupNoVal, sz_ZERO), b->getSize(4), sz_TWO);
+    Value * isPhraseCompressible = b->CreateAnd(b->CreateICmpUGE(phraseFreq, minFreqReqForCmp), hasGreaterFreq);
 
     Value * phraseInTableOrigIdx = b->CreateAnd(b->CreateICmpEQ(entry1hash1, sym1), b->CreateICmpEQ(entry2hash1, sym2));
     b->CreateCondBr(phraseInTableOrigIdx, updatePhraseHashIdx, tryStore);
@@ -657,12 +660,10 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     // b->CallPrintInt("phraseMoved", phraseMoved);
     // Value * globalFreqTblEntryPtr = b->CreateInBoundsGEP(globalFreqSubTablePtr, tableIdxHash, "globalFreqTblEntryPtr");
     // Value * globalFreqTblPtr = b->CreateBitCast(globalFreqTblEntryPtr, sizeTy->getPointerTo());
-#endif
     Value * globalKeyIdxPtr = b->CreateGEP(globalSubTablePtr, b->CreateMul(tableIdxHash, keyLength));
     Value * globalTblEntryPtr = b->CreateInBoundsGEP(globalKeyIdxPtr, sz_ZERO);
     Value * globalTblPtr1 = b->CreateBitCast(globalTblEntryPtr, lg.halfSymPtrTy);
     Value * globalTblPtr2 = b->CreateBitCast(b->CreateGEP(globalTblEntryPtr, keyOffset), lg.halfSymPtrTy);
-#ifdef USE_CUCKOO_HASHING
     Value * entryFH1 = b->CreateMonitoredScalarFieldLoad("hashTable", globalTblPtr1);
     Value * entryFH2 = b->CreateMonitoredScalarFieldLoad("hashTable", globalTblPtr2);
     Value * entryFreqFH = b->CreateMonitoredScalarFieldLoad("freqTable", globalFreqTblPtr);
@@ -678,8 +679,8 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
 #endif
     b->CreateCondBr(hasGreaterFreq, storeInFirstHash, nextKey);
     b->SetInsertPoint(storeInFirstHash); // only checks the frequency of phrase mapping to tableIdxHash1Phi; stores the highest frequency phrase in any segment.
-    b->CreateMonitoredScalarFieldStore("hashTable", /*addPhrase1*/sym1, globalTblPtr1);
-    b->CreateMonitoredScalarFieldStore("hashTable", /*addPhrase2*/sym2, globalTblPtr2);
+    b->CreateMonitoredScalarFieldStore("hashTable", /*addPhrase1*/sym1, hash1Ptr1);
+    b->CreateMonitoredScalarFieldStore("hashTable", /*addPhrase2*/sym2, hash1Ptr2);
 #ifdef USE_CUCKOO_HASHING
     b->CreateMonitoredScalarFieldStore("secondHashEntryTable", tableIdxHash_H2, secHashTblPtr);
     Value * symIsEqEntry = b->CreateAnd(b->CreateICmpEQ(addPhrase1, origPhrase1), b->CreateICmpEQ(addPhrase2, origPhrase2));
@@ -724,7 +725,7 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     b->SetInsertPoint(storeInNextEmptyHash);
     b->CreateMonitoredScalarFieldStore("hashTable", sym1, nextSymPtr1);
     b->CreateMonitoredScalarFieldStore("hashTable", sym2, nextSymPtr2);
-    b->CreateMonitoredScalarFieldStore("freqTable", phraseFreq, globalFreqTblPtr1);
+    b->CreateMonitoredScalarFieldStore("freqTable", phraseFreq, nextSymFreqTblPtr);
     b->CreateStore(b->CreateTrunc(b->CreateAnd(curIndex, sz_FFFF), b->getInt16Ty()), b->getRawOutputPointer("freqUpdated", b->CreateSub(keyMarkPos, sz_ONE))); // ANND curIndex with TABLE_MASK ??
     b->CreateBr(nextKey);
 
@@ -732,6 +733,7 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     curIndex->addIncoming(nextIndex, checkIdxCond);
     b->CreateCondBr(b->CreateICmpNE(nextIndex, endIdx), indexReady, nextKey);
 
+#ifdef USE_CUCKOO_HASHING
     // move the phrase from its first hash index (H1) and place the colliding phrase in H1
     b->SetInsertPoint(checkSecondHash);
 
@@ -1049,7 +1051,7 @@ void MarkRepeatedHashvalue::generateMultiBlockLogic(BuilderRef b, Value * const 
     b->CreateCondBr(b->CreateICmpEQ(prevGrpLShrOverlap, sz_ZERO), checkSameGrpOverlap, nextSym); //ignore previous group overlaps; do not have access to their absolute frequencies
 
     b->SetInsertPoint(checkSameGrpOverlap);
-    b->CreateCondBr(b->CreateICmpEQ(sameGrpLShrOverlap, sz_ZERO), markSymCompression, checkUnmark);
+    b->CreateCondBr(b->CreateICmpEQ(sameGrpLShrOverlap, sz_ZERO), markSymCompression, nextSym);
 
     b->SetInsertPoint(checkUnmark);
     Value * sameGrpPhraseFreq = b->CreateZExt(b->CreateLoad(b->getRawOutputPointer("freqUpdated", sameGrpLShrFZOverlapPos)), sizeTy);
@@ -1264,7 +1266,8 @@ SymbolGroupCompression::SymbolGroupCompression(BuilderRef b,
                     InternalScalar{b->getSizeTy(), "absBlocksProcessed"},
                     InternalScalar{b->getSizeTy(), "lastLfPos"},
                     InternalScalar{ArrayType::get(ArrayType::get(ArrayType::get(b->getInt8Ty(), encodingScheme.byLength[groupNo].hi), phraseHashSubTableSize(encodingScheme, groupNo, numSyms)), 
-+                                  (encodingScheme.byLength[groupNo].hi - encodingScheme.byLength[groupNo].lo + 1)), "hashTable"}}),
++                                  (encodingScheme.byLength[groupNo].hi - encodingScheme.byLength[groupNo].lo + 1)), "hashTable"},
+                    InternalScalar{ArrayType::get(b->getSizeTy(), phraseHashSubTableSize(encodingScheme, groupNo, numSyms) * (encodingScheme.byLength[groupNo].hi - encodingScheme.byLength[groupNo].lo + 1)), "lastSeenSeg"}}),
 mEncodingScheme(encodingScheme), mGroupNo(groupNo), mNumSym(numSyms), mSubStride(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS)), mOffset(offset), mStrideSize(1048576) {
         mOutputStreamSets.emplace_back("compressionMask", compressionMask, FixedRate(), Delayed(1048576) );
         mOutputStreamSets.emplace_back("encodedBytes", encodedBytes, FixedRate(), Delayed(1048576) );
@@ -1312,6 +1315,8 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
     BasicBlock * const updatePending = b->CreateBasicBlock("updatePending");
     BasicBlock * const compressionMaskDone = b->CreateBasicBlock("compressionMaskDone");
     BasicBlock * const processKey = b->CreateBasicBlock("processKey");
+    BasicBlock * const updateLastSeen = b->CreateBasicBlock("updateLastSeen");
+    BasicBlock * const tryCompression = b->CreateBasicBlock("tryCompression");
 #ifdef USE_CUCKOO_HASHING
     BasicBlock * const storeInFirstHash = b->CreateBasicBlock("storeInFirstHash");
     BasicBlock * const storeInSecHash = b->CreateBasicBlock("storeInSecHash");
@@ -1355,6 +1360,7 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
     Value * phraseMaskPtr = b->CreateBitCast(b->getRawOutputPointer("codewordMask", actualProcessed), bitBlockPtrTy);
     Value * compressMaskPtr = b->CreateBitCast(b->getRawOutputPointer("compressionMask", actualProcessed), bitBlockPtrTy);
     Value * hashTableBasePtr = b->CreateBitCast(b->getScalarFieldPtr("hashTable"), b->getInt8PtrTy());
+    Value * lastSeenTableBasePtr = b->CreateBitCast(b->getScalarFieldPtr("lastSeenSeg"), sizeTy->getPointerTo());
     if (!DelayedAttributeIsSet()) {
         // Copy pending output data.
         Value * const initialProduced1 = b->getProducedItemCount("encodedBytes");
@@ -1435,7 +1441,7 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
     b->SetInsertPoint(processKey);
     /* Determine the key length. */
     Value * hashValue = b->CreateZExt(b->CreateLoad(b->getRawInputPointer("hashValues", keyMarkPos)), sizeTy);
-    Value * hashExtBit = b->CreateAnd(hashValue, b->getSize(0x80));
+    // Value * hashExtBit = b->CreateAnd(hashValue, b->getSize(0x80));
     Value * keyLength = b->CreateAdd(b->CreateLShr(hashValue, lg.MAX_HASH_BITS), sz_PHRASE_LEN_OFFSET, "keyLength");
     Value * keyStartPos = b->CreateSub(keyMarkPos, b->CreateSub(keyLength, sz_ONE), "keyStartPos");
     // keyOffset for accessing the final half of an entry.
@@ -1536,6 +1542,9 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
     Value * sym2 = b->CreateAlignedLoad(symPtr2, 1);
     Value * entry1 = b->CreateMonitoredScalarFieldLoad("hashTable", tblPtr1);
     Value * entry2 = b->CreateMonitoredScalarFieldLoad("hashTable", tblPtr2);
+    Value * lastSeenSubTablePtr = b->CreateGEP(lastSeenTableBasePtr, b->CreateMul(b->CreateSub(keyLength, lg.LO), lg.FREQ_SUBTABLE_SIZE));
+    Value * lastSeenSymIdxPtr = b->CreateGEP(lastSeenSubTablePtr, tableIdxHash);
+    Value * lastSeenSymTblEntryPtr = b->CreateBitCast(lastSeenSymIdxPtr, sizeTy->getPointerTo());
 /*
     All the marked symMarks indicate hashMarks for only repeated phrases.
     Among those marks,
@@ -1549,8 +1558,7 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
     symIsEqEntry = b->CreateOr(symIsEqEntry, symIsEqEntry_H2);
     Value * sfxReadPos = b->CreateSelect(symIsEqEntry_H2, keyMarkPos_H2, keyMarkPos);
 #endif
-
-    b->CreateCondBr(symIsEqEntry, markCompression, storeKey);
+    b->CreateCondBr(symIsEqEntry, tryCompression, storeKey);
 
     // replace any colliding phrase; it'll be the new frequent phrase
     b->SetInsertPoint(storeKey);
@@ -1608,6 +1616,7 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
     // be compressed using the hash code.
     b->CreateMonitoredScalarFieldStore("hashTable", sym1, tblPtr1);
     b->CreateMonitoredScalarFieldStore("hashTable", sym2, tblPtr2);
+    b->CreateMonitoredScalarFieldStore("lastSeenSeg", b->getScalarField("segIndex"), lastSeenSymTblEntryPtr);
 #if 0
     b->CreateCondBr(b->CreateICmpEQ(keyLength, sz_PLEN), writeDebugOutput1, dontWriteDebugOutput);
     b->SetInsertPoint(writeDebugOutput1);
@@ -1627,8 +1636,20 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
     b->CallPrintInt("keyMarkPos", keyMarkPos);
     b->CallPrintInt("b->CreateSub(keyMarkPos, phraseEndPos)", b->CreateSub(keyMarkPos, phraseEndPos));
 #endif
-    // markCompression even for the first occurrence
+    b->CreateBr(tryCompression);
+
+    b->SetInsertPoint(tryCompression);
+    Value * symLastSeenSeg  = b->CreateMonitoredScalarFieldLoad("lastSeenSeg", lastSeenSymTblEntryPtr);
+    // if table entry belongs to segment (i-1) and sym is in segment i, do not compress the first occurrence of sym in segment i.
+    // update the table entry's last seen to segment i; compress all the subsequent matches with the table entry in segment i.
+    // Simplifies tracking any dictionary entry's usage in a segment without requiring the repeated dictionary entry.
+    b->CreateCondBr(b->CreateAnd(symIsEqEntry, b->CreateICmpNE(symLastSeenSeg, b->getScalarField("segIndex"))), updateLastSeen, markCompression);
+
+    b->SetInsertPoint(updateLastSeen);
+    b->CreateMonitoredScalarFieldStore("lastSeenSeg", b->getScalarField("segIndex"), lastSeenSymTblEntryPtr);
+    // b->CreateBr(nextKey); // disabled fucntioning
     b->CreateBr(markCompression);
+
     b->SetInsertPoint(markCompression);
 #ifdef USE_CUCKOO_HASHING
     PHINode * const readPosPhi = b->CreatePHI(sizeTy, 3);
@@ -1753,6 +1774,7 @@ void SymbolGroupCompression::generateMultiBlockLogic(BuilderRef b, Value * const
     b->CallPrintInt("keyMarkPos", keyMarkPos);
     // b->CallPrintInt("isSecHash", isSecHash);
     b->CallPrintInt("symIsEqEntry_H2", symIsEqEntry_H2);
+#endif
 #endif
 
     Value * pfxBits = b->CreateAnd(codewordValFin, lg.PREFIX_LENGTH_MASK);

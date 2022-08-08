@@ -188,7 +188,6 @@ ztfHashFunctionType ztfHash_compression_gen (CPUDriver & driver) {
     std::vector<StreamSet *> allSecHashMarks;
     StreamSet * const inputBytes = codeUnitStream;
     StreamSet * cmpMarksSoFar = symEnd;
-    StreamSet * initFreq = allHashValues[0]; // -> to compare with any overlapping phrase in other group --> useful for 2-sym phrases
     for (unsigned sym = 0; sym < SymCount; sym++) {
         int startLgIdx = 0;
         int endIdx = encodingScheme1.byLength.size() - 1;
