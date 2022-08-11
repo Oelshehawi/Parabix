@@ -140,18 +140,12 @@ public:
     PostProcessCandidateMatches(BuilderRef b,
                          EncodingInfo & encodingScheme,
                          StreamSet * const basis,
-                         StreamSet * Results,
+                        //  StreamSet * Results,
                          StreamSet * dictStart,
-                         StreamSet * dictEnd,
-                         StreamSet * candidateMatchesInDict,
-                         StreamSet * nonCandidateMatchesInDict,
-                         StreamSet * codeWordInCipherText,
-                         StreamSet * candidateMatchesInCipherText,
-                         bool matchOnly = false);
+                         StreamSet * dictEnd);
 protected:
     void generatePabloMethod() override;
     EncodingInfo & mEncodingScheme;
-    bool mMatchOnly;
 };
 
 class codeword_index : public pablo::PabloKernel {
@@ -164,8 +158,7 @@ protected:
 class MatchedSegmentsKernel : public pablo::PabloKernel {
 public:
     MatchedSegmentsKernel(BuilderRef builder,
-                          StreamSet * OriginalMatches,
-                          StreamSet * CodewordMatches,
+                          StreamSet * matches,
                           StreamSet * dictionaryBoundaryBreaks,
                           StreamSet * Matches,
                           StreamSet * dictStartPartialSum);

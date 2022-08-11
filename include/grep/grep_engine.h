@@ -131,7 +131,6 @@ protected:
 
     // Transpose to basis bit streams, if required otherwise return the source byte stream.
     kernel::StreamSet * getBasis(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * ByteStream);
-    void getFullyDecompressedBytes(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * const ByteStream, kernel::StreamSet * const decoded_bytes);
 
     // Initial grep set-up.
     // Implement any required checking/processing of null characters, determine the
@@ -142,10 +141,7 @@ protected:
     void addExternalStreams(const std::unique_ptr<kernel::ProgramBuilder> & P, std::unique_ptr<kernel::GrepKernelOptions> & options, re::RE * regexp, kernel::StreamSet * indexMask = nullptr);
     void U8indexedGrep(const std::unique_ptr<kernel::ProgramBuilder> &P, re::RE * re, kernel::StreamSet * Source, kernel::StreamSet * Results);
     void UnicodeIndexedGrep(const std::unique_ptr<kernel::ProgramBuilder> &P, re::RE * re, kernel::StreamSet * Source, kernel::StreamSet * Results);
-    void ZTFPreliminaryGrep(const std::unique_ptr<kernel::ProgramBuilder> &P, re::RE * re, kernel::StreamSet * Source, kernel::StreamSet * Results);
-    void ZTFDecmpLogic(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * Source, kernel::StreamSet * const Results, kernel::StreamSet * const decompressed_basis, bool matchOnly = false);
     kernel::StreamSet * grepPipeline(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * ByteStream);
-    void ztfGrepPipeline(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * const ByteStream, kernel::StreamSet * const decoded_byteStream, bool matchOnly = false);
     virtual uint64_t doGrep(const std::vector<std::string> & fileNames, std::ostringstream & strm);
     int32_t openFile(const std::string & fileName, std::ostringstream & msgstrm);
 
@@ -197,11 +193,6 @@ protected:
     kernel::StreamSet * mU8index;
     kernel::StreamSet * mGCB_stream;
     kernel::StreamSet * mWordBoundary_stream;
-    // TODO: make these streams local to ztfGrepPipeline
-    kernel::StreamSet * mCmpLineBreakStream;
-    kernel::StreamSet * mCmpU8index;
-    kernel::StreamSet * mCmpGCB_stream;
-    kernel::StreamSet * mCmpWordBoundary_stream;
     re::UTF8_Transformer mUTF8_Transformer;
     pthread_t mEngineThread;
 };
@@ -213,6 +204,7 @@ protected:
 
 class EmitMatch : public MatchAccumulator {
     friend class EmitMatchesEngine;
+    friend class ZTFGrepEngine;
 public:
     EmitMatch(bool showFileNames, bool showLineNumbers, bool showContext, bool initialTab)
         : mShowFileNames(showFileNames),
@@ -259,6 +251,24 @@ public:
     void grepCodeGen() override;
 private:
     uint64_t doGrep(const std::vector<std::string> & fileNames, std::ostringstream & strm) override;
+};
+
+class ZTFGrepEngine final : public GrepEngine {
+public:
+    ZTFGrepEngine(BaseDriver & driver);
+    void getDecompressedBytes(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * const ByteStream, kernel::StreamSet * const decoded_bytes, bool fullyDecompress);
+    void ZTFGrepPipeline(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * const ByteStream, kernel::StreamSet * const decoded_byteStream, bool matchOnly = false);
+    void ZTFPreliminaryGrep(const std::unique_ptr<kernel::ProgramBuilder> &P, re::RE * re, kernel::StreamSet * Source, kernel::StreamSet * Results);
+    void ZTFDecmpLogic(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * Source, kernel::StreamSet * const Results, kernel::StreamSet * const decompressed_basis, bool matchOnly = false);
+    void grepPipeline(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * ByteStream);
+    void grepCodeGen() override;
+    private:
+    uint64_t doGrep(const std::vector<std::string> & fileNames, std::ostringstream & strm) override;
+    protected:
+    kernel::StreamSet * mCmpLineBreakStream;
+    kernel::StreamSet * mCmpU8index;
+    kernel::StreamSet * mCmpGCB_stream;
+    kernel::StreamSet * mCmpWordBoundary_stream;
 };
 
 class CountOnlyEngine final : public GrepEngine {
