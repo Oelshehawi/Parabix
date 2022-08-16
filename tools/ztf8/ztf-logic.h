@@ -49,6 +49,7 @@ public:
     unsigned getHashBytes(unsigned groupNo) const;
     unsigned getRange(unsigned groupNo) const;
     unsigned getSuffixMask(unsigned suffixNo, unsigned groupNo, unsigned numSym) const;
+    unsigned getPhraseIdxMask(unsigned groupNo) const;
     std::string uniqueSuffix() const;
 };
 

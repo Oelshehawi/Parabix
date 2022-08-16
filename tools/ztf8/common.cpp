@@ -9,6 +9,7 @@ using namespace llvm;
 static cl::opt<bool> DeferredAttribute("deferred", cl::desc("Use Deferred attribute instead of Lookbehind for source data"), cl::init(false));
 static cl::opt<bool> DelayedAttribute("delayed", cl::desc("Use Delayed Attribute instead of BoundedRate for output"), cl::init(true));
 static cl::opt<bool> PrefixCheck("prefix-check-mode", cl::desc("Use experimental prefix check mode"), cl::init(false));
+static cl::opt<bool> NonOptimalCompression("seg-specific-dict", cl::desc("Dictionary is built in an incremental way"), cl::init(true));
 
 bool LLVM_READONLY DeferredAttributeIsSet() {
     return DeferredAttribute;
@@ -20,6 +21,10 @@ bool LLVM_READONLY DelayedAttributeIsSet() {
 
 bool LLVM_READONLY PrefixCheckIsSet() {
     return PrefixCheck;
+}
+
+bool LLVM_READONLY GetSegWiseDict() {
+    return NonOptimalCompression;
 }
 
 using BuilderRef = Kernel::BuilderRef;
@@ -88,7 +93,8 @@ LengthGroupParameters::LengthGroupParameters(BuilderRef b, EncodingInfo encoding
     SUFFIX2_MASK(b->getSize((1UL << encodingScheme.getSuffixMask(2, groupNo, numSym)) - 1UL)),
     SUFFIX2_BITS(b->getSize(encodingScheme.getSuffixMask(2, groupNo, numSym))),
     SUFFIX3_MASK(b->getSize((1UL << encodingScheme.getSuffixMask(3, groupNo, numSym)) - 1UL)),
-    SUFFIX3_BITS(b->getSize(encodingScheme.getSuffixMask(3, groupNo, numSym)))
+    SUFFIX3_BITS(b->getSize(encodingScheme.getSuffixMask(3, groupNo, numSym))),
+    PHRASE_IDX_MASK(b->getSize((1UL << encodingScheme.getPhraseIdxMask(groupNo)) - 1UL))
      {
         assert(groupInfo.hi <= (1UL << (boost::intrusive::detail::floor_log2(groupInfo.lo) + 1UL)));
     }
@@ -115,14 +121,15 @@ unsigned phraseHashSubTableSize(EncodingInfo encodingScheme, unsigned groupNo, u
         switch(groupNo) {
             case 0: return 0; // not done
             break;
-            case 1: return 16384;
+            case 1: return 32768; //16384; >> to avoid PrintPipelineGraph error. No need of large index space.
             break;
-            case 2: return 8192;
+            case 2: return 16384; //8192;
             break;
-            case 3: return 8192;
+            case 3: return 16384; //8192;
             break;
         }
     }
+    return 0;
 }
 
 unsigned phraseVectorSize(EncodingInfo encodingScheme, unsigned groupNo) {
@@ -400,7 +407,8 @@ std::vector<Value *> initializeCompressionMasks2(BuilderRef b,
                                                 unsigned maskCount,
                                                 Value * absBlockOffset,
                                                 Value * dictMaskPtr,
-                                                BasicBlock * strideMasksReady) {
+                                                BasicBlock * strideMasksReady,
+                                                bool secHashFlag) {
     Constant * sz_ZERO = b->getSize(0);
     Constant * sz_ONE = b->getSize(1);
     Constant * sz_BLOCKWIDTH = b->getSize(b->getBitBlockWidth());
@@ -437,9 +445,11 @@ std::vector<Value *> initializeCompressionMasks2(BuilderRef b,
         keyMaskAccum[i]->addIncoming(keyMasks[i], maskInit);
     }
     Value * dictMaskCurPtr = b->CreateBitCast(b->getRawOutputPointer("hashMarks", blockPos), bitBlockPtrTy);
-    Value * secHashMaskCurPtr = b->CreateBitCast(b->getRawOutputPointer("secHashMarks", blockPos), bitBlockPtrTy);
+    if (secHashFlag) {
+        Value * secHashMaskCurPtr = b->CreateBitCast(b->getRawOutputPointer("secHashMarks", blockPos), bitBlockPtrTy);
+        b->CreateBlockAlignedStore(b->allZeroes(), secHashMaskCurPtr);
+    }
     b->CreateBlockAlignedStore(b->allZeroes(), dictMaskCurPtr);
-    b->CreateBlockAlignedStore(b->allZeroes(), secHashMaskCurPtr);
     Value * const nextBlockNo = b->CreateAdd(blockNo, sz_ONE);
     Value * const nextBlockPos = b->CreateAdd(blockPos, sz_BLOCKWIDTH);
     blockNo->addIncoming(nextBlockNo, maskInit);

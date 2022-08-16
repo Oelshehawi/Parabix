@@ -79,6 +79,7 @@ SRC
     ztf-phrase-scan.cpp
     ztf-phrase-logic.cpp
     ztf-phrase-hash.cpp
+    ztf-phrase-freq.cpp
 DEPS
     grep
     pablo

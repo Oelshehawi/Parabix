@@ -46,8 +46,8 @@ public:
     void generatePabloMethod() override;
 private:
     unsigned mIndexCount;
-    bool mOverflow;
     unsigned mOffset;
+    bool mOverflow;
 };
 
 class AccumRunIndexNew : public pablo::PabloKernel {

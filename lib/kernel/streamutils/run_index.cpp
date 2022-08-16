@@ -184,9 +184,9 @@ void AccumRunIndex::generatePabloMethod() {
     //pb.createDebugPrint(notFirstSymSum, "notFirstSymSum");
     PabloAST * inRangeFinal = pb.createAnd(pb.createNot(byteLenSym), notFirstSymSum);
     // add k for k-symbol phrase length calculation
-    BixNum sum = bnc.AddModular(bnc.AddModular(prevSymLen, curSymLen), mOffset); //bnc.AddModular(prevSymLen, curSymLen);
-    curOverflow = pb.createOr(curOverflow, bnc.ULT(sum, curSymLen));
-    //pb.createDebugPrint(curOverflow, "curOverflow");
+    BixNum sum = bnc.AddFull(bnc.AddFull(prevSymLen, curSymLen), mOffset); //bnc.AddModular(prevSymLen, curSymLen);
+    // overflow sum will have their low bits written to sum; which will be less than either of the operands
+    curOverflow = pb.createOr(curOverflow, bnc.UGE(sum, 32)); // tested successfully for ruwiki
     inRangeFinal = pb.createAnd(inRangeFinal, pb.createXor(inRangeFinal, curOverflow));
     //pb.createDebugPrint(inRangeFinal, "inRangeFinal");
     //pb.createDebugPrint(pb.createAnd(symEndPos, inRangeFinal), "included");
@@ -205,7 +205,7 @@ Bindings AccumRunIndexNewOutputBindings(StreamSet * phraseRunIndex, StreamSet * 
 
 AccumRunIndexNew::AccumRunIndexNew(BuilderRef b, unsigned numSym,
                                    StreamSet * const runMarks, StreamSet * runIndex, StreamSet * overflow, StreamSet * phraseRunIndex, StreamSet * phraseOverflow)
-    : PabloKernel(b, "AccumRunIndexNew-" + std::to_string(runIndex->getNumElements()) + (overflow == nullptr ? "" : "overflow"),
+    : PabloKernel(b, "AccumRunIndexNew-" + std::to_string(runIndex->getNumElements()) + (overflow == nullptr ? "_" : "overflow_") + std::to_string(numSym),
            // input
 {Binding{"runMarks", runMarks, FixedRate(), LookAhead(1)}, Binding{"runIndex", runIndex, FixedRate(), LookAhead(1)}, Binding{"overflow", overflow}},
            // output
@@ -255,8 +255,8 @@ void AccumRunIndexNew::generatePabloMethod() {
     PabloAST * inRangeFinal = notFirstSymSum;
 
     // for 3-sym phrases, 2 and 3-sym phrases got to be incremented by 1 and 2 respectively
-    BixNum sum = bnc.AddModular(bnc.AddModular(prevSymLen, runIndex), (mNumSym-1)); //bnc.AddModular(prevSymLen, runIndex);
-    curOverflow = pb.createOr(curOverflow, bnc.ULT(sum, curSymLen));
+    BixNum sum = bnc.AddFull(bnc.AddFull(prevSymLen, runIndex), (mNumSym-1)); //bnc.AddModular(prevSymLen, runIndex);
+    curOverflow = pb.createOr(curOverflow, bnc.UGE(sum, 32));
     inRangeFinal = pb.createAnd(inRangeFinal, pb.createXor(inRangeFinal, curOverflow));
     for (unsigned i = 0; i < mIndexCount; i++) {
         pb.createAssign(pb.createExtract(phraseRunIndexVar, pb.getInteger(i)), pb.createOr(curSymLen[i], pb.createAnd(sum[i], inRangeFinal)));

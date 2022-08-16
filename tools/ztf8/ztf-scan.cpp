@@ -978,7 +978,7 @@ void generateDecompKeyProcessingLoops(BuilderRef b,
         std::vector<Value *> sym = loadSymbol(b, symPtr, length);
         std::vector<Value *> entry = MonitoredScalarLoadSymbol(b, "hashTable", tblEntryPtr, length);
 
-        Value * keyLength = b->CreateAdd(b->getSize(length), sz_ZERO);
+        // Value * keyLength = b->CreateAdd(b->getSize(length), sz_ZERO);
 //        b->CreateWriteCall(b->getInt32(STDERR_FILENO), symPtr, keyLength);
 
         b->CreateCondBr(isNullSymbol(b, entry), storeKey, nextKey);

@@ -281,7 +281,7 @@ ZTF_PhraseDecodeLengths::ZTF_PhraseDecodeLengths(BuilderRef b,
                                                 StreamSet * hashtableStreams,
                                                 StreamSet * hashtableSpan,
                                                 bool fullyDecompress) // TODO: don't need this flag too
-: PabloKernel(b, "ZTF_PhraseDecodeLengths" + encodingScheme.uniqueSuffix(),
+: PabloKernel(b, "ZTF_PhraseDecodeLengths" + encodingScheme.uniqueSuffix() + "_" + std::to_string(numSym),
               {Binding{"basisBits", basisBits, FixedRate(), LookAhead(1)}},
               {Binding{"groupStreams", groupStreams},
                Binding{"hashtableStreams", hashtableStreams},
@@ -383,10 +383,10 @@ void ZTF_PhraseDecodeLengths::generatePabloMethod() {
                     lastGroupStream = pb.createAnd(lastGroupStream, allInvalidBoundaryCodeword);
                     groupStreams[i] = pb.createAnd(pb.createAdvance(groupStreams[i], 1), suffix_80_BF);
                     groupStreams[i] = pb.createAnd(groupStreams[i], pb.createNot(lastGroupStream)); // remove 2-sym phrases
-                    groupStreams[idx] = lastGroupStream;
+                    if (mNumSym > 1) groupStreams[idx] = lastGroupStream;
                 }
                 else {
-                    groupStreams[idx] = curGroupStream;
+                    if (mNumSym > 1) groupStreams[idx] = curGroupStream;
                 }
                 //pb.createOr(groupStreams[i], curGroupStream);
             }
@@ -631,7 +631,6 @@ void ZTF_PhraseExpansionDecoder::generatePabloMethod() {
         PabloAST * inGroup = pb.createZeroes();
         PabloAST * groupRange = pb.createZeroes();
         unsigned two_byte_cw_end = 2;
-        unsigned pfx_jump_8 = 1;
         unsigned lookAhead1 = 1;
         unsigned lookAhead2 = 2;
         if (i < two_byte_cw_end) {

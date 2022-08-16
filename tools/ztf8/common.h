@@ -74,6 +74,7 @@ struct LengthGroupParameters {
     Constant * SUFFIX2_BITS;
     Constant * SUFFIX3_MASK;
     Constant * SUFFIX3_BITS;
+    Constant * PHRASE_IDX_MASK;
     LengthGroupParameters(BuilderRef b, EncodingInfo encodingScheme, unsigned groupNo, unsigned numSym = 0);
 };
 
@@ -123,7 +124,8 @@ std::vector<llvm::Value *> initializeCompressionMasks2(Kernel::BuilderRef b,
                                                     unsigned maskCount,
                                                     llvm::Value * strideBlockOffset,
                                                     llvm::Value * dictMaskPtr,
-                                                    llvm::BasicBlock * strideMasksReady);
+                                                    llvm::BasicBlock * strideMasksReady,
+                                                    bool secHashFlag = true);
 void initializeDecompressionMasks(Kernel::BuilderRef b,
                                                     struct ScanWordParameters & sw,
                                                     llvm::Constant * sz_BLOCKS_PER_STRIDE,
@@ -174,5 +176,6 @@ Value * getSegBoundaryPos(Kernel::BuilderRef b,
 bool LLVM_READONLY DeferredAttributeIsSet();
 bool LLVM_READONLY DelayedAttributeIsSet();
 bool LLVM_READONLY PrefixCheckIsSet();
+bool LLVM_READONLY GetSegWiseDict();
 
 #endif

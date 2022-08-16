@@ -194,6 +194,7 @@ unsigned EncodingInfo::getFreqSubtableSize(unsigned groupNo, unsigned numSym) co
             break;
         }
     }
+    return 0;
 }
 
 unsigned EncodingInfo::getPhraseExtensionBits(unsigned groupNo, unsigned enc_scheme) const {
@@ -242,6 +243,7 @@ unsigned EncodingInfo::getHashBytes(unsigned groupNo) const {
         case 1: return 3;
         case 2: return 2;
         case 3: return 2;
+        default: return 0;
     }
 }
 
@@ -262,8 +264,20 @@ unsigned EncodingInfo::getSuffixMask(unsigned suffixNo, unsigned groupNo, unsign
         case 3: {
             return 6;
         }
+        default: return 0;
     }
 }
+
+unsigned EncodingInfo::getPhraseIdxMask(unsigned groupNo) const {
+    switch(groupNo) {
+        case 0: return 18;
+        case 1: return 18;
+        case 2: return 17;
+        case 3: return 17;
+        default: return 0;
+    }
+}
+
 Bindings WordMarkKernelOutputBindings(StreamSet * WordMarks, StreamSet * possibleSymStart) {
     if (possibleSymStart == nullptr) return {Binding{"WordMarks", WordMarks}};
     return {Binding{"WordMarks", WordMarks}, Binding{"possibleSymStart", possibleSymStart}};
