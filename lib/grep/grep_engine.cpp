@@ -681,19 +681,9 @@ void ZTFGrepEngine::ZTFPreliminaryGrep(const std::unique_ptr<ProgramBuilder> & P
         lengths = getLengthRange(re, &cc::UTF8);
         if (hasComponent(mExternalComponents, Component::UTF8index)) {
             options->setIndexingTransformer(&mUTF8_Transformer, mCmpU8index);
-            if (mSuffixRE != nullptr) {
-                options->setPrefixRE(mPrefixRE);
-                options->setRE(mSuffixRE);
-            } else {
-                options->setRE(re);
-            }
+            options->setRE(re);
         } else {
-            if (mSuffixRE != nullptr) {
-                options->setPrefixRE(toUTF8(mPrefixRE));
-                options->setRE(toUTF8(mSuffixRE));
-            } else {
-                options->setRE(toUTF8(re));
-            }
+            options->setRE(toUTF8(re));
         }
     }
     options->setSource(SourceStream);
