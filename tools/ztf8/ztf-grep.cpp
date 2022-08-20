@@ -34,10 +34,10 @@
 #include <util/papi_helper.hpp>
 #endif
 
-#include "ztf-logic.h"
+#include <kernel/ztf/ztf-logic.h>
+#include <kernel/ztf/ztf-phrase-logic.h>
+#include <kernel/ztf/ztf-phrase-scan.h>
 #include "ztf-scan.h"
-#include "ztf-phrase-scan.h"
-#include "ztf-phrase-logic.h"
 #include "../tools/icgrep/grep_interface.h"
 
 using namespace llvm;
@@ -115,6 +115,7 @@ int main(int argc, char *argv[]) {
             if (argv::WithFilenameFlag) grep->showFileNames();
             if (argv::LineNumberFlag) grep->showLineNumbers();
             if (argv::InitialTabFlag) grep->setInitialTab();
+            if (argv::FullyDecompressFlag) grep->setFullyDecompressOption(argv::FullyDecompressFlag);
            break;
         case argv::CountOnly:
             grep = std::make_unique<grep::CountOnlyEngine>(driver);

@@ -37,7 +37,6 @@ parabix_add_executable(
 NAME
     ztf-runs
 SRC
-    ztf-logic.cpp
     ztf-runs.cpp
 DEPS
     grep
@@ -47,6 +46,7 @@ DEPS
     kernel.pipeline
     kernel.streamutils
     kernel.util
+    kernel.ztf
     toolchain
 )
 
@@ -54,10 +54,8 @@ parabix_add_executable(
 NAME
     ztf-hash
 SRC
-    ztf-logic.cpp
     ztf-scan.cpp
     ztf-hash.cpp
-    common.cpp
 DEPS
     grep
     pablo
@@ -66,6 +64,7 @@ DEPS
     kernel.pipeline
     kernel.streamutils
     kernel.util
+    kernel.ztf
     toolchain
 )
 
@@ -73,11 +72,7 @@ parabix_add_executable(
 NAME
     ztf-phrase-hash
 SRC
-    ztf-logic.cpp
-    common.cpp
     ztf-scan.cpp
-    ztf-phrase-scan.cpp
-    ztf-phrase-logic.cpp
     ztf-phrase-hash.cpp
     ztf-phrase-freq.cpp
 DEPS
@@ -88,6 +83,7 @@ DEPS
     kernel.pipeline
     kernel.streamutils
     kernel.util
+    kernel.ztf
     toolchain
 )
 
@@ -97,12 +93,6 @@ NAME
 SRC
     ../icgrep/grep_interface.cpp
     ztf-grep.cpp
-    ztf-logic.cpp
-    ztf-scan.cpp
-    ztf-phrase-scan.cpp
-    ztf-phrase-logic.cpp
-    ztf-phrase-freq.cpp
-    common.cpp
 DEPS
     grep
     pablo
@@ -111,6 +101,7 @@ DEPS
     kernel.pipeline
     kernel.streamutils
     kernel.util
+    kernel.ztf
     toolchain
     fileselect
 )

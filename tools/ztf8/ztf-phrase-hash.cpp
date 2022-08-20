@@ -49,11 +49,11 @@
 #include <iostream>
 #include <iomanip>
 #include <kernel/pipeline/pipeline_builder.h>
-#include "ztf-logic.h"
-#include "ztf-scan.h"
-#include "ztf-phrase-scan.h"
-#include "ztf-phrase-logic.h"
+#include <kernel/ztf/ztf-logic.h>
+#include <kernel/ztf/ztf-phrase-scan.h>
+#include <kernel/ztf/ztf-phrase-logic.h>
 #include "ztf-phrase-freq.h"
+#include "ztf-scan.h"
 
 // #if 0
 #define USE_NEW_FREQ_CALC

@@ -4,7 +4,7 @@
  *  icgrep is a trademark of International Characters.
  */
 
-#include "ztf-logic.h"
+#include <kernel/ztf/ztf-logic.h>
 #include <re/adt/re_name.h>
 #include <re/adt/re_re.h>
 #include <pablo/bixnum/bixnum.h>

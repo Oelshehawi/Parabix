@@ -8,7 +8,7 @@
 
 #include <pablo/pablo_kernel.h>
 #include <kernel/core/kernel_builder.h>
-#include "ztf-logic.h"
+#include <kernel/ztf/ztf-logic.h>
 
 namespace kernel {
 

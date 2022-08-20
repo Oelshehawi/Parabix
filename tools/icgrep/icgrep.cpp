@@ -35,11 +35,6 @@
 #include <util/papi_helper.hpp>
 #endif
 
-#include "../../tools/ztf8/ztf-logic.h"
-#include "../../tools/ztf8/ztf-scan.h"
-#include "../../tools/ztf8/ztf-phrase-scan.h"
-#include "../../tools/ztf8/ztf-phrase-logic.h"
-
 using namespace llvm;
 
 static cl::list<std::string> inputFiles(cl::Positional, cl::desc("<regex> <input file ...>"), cl::OneOrMore);

@@ -101,6 +101,7 @@ public:
 
     void suppressFileMessages(bool b = true) {mSuppressFileMessages = b;}
     void setBinaryFilesOption(argv::BinaryFilesMode mode) {mBinaryFilesMode = mode;}
+    void setFullyDecompressOption(bool mode) {mFullyDecompressMode = mode;}
     void setRecordBreak(GrepRecordBreakKind b);
     void initFileResult(const std::vector<boost::filesystem::path> & filenames);
     bool haveFileBatch();
@@ -152,6 +153,7 @@ protected:
     EngineKind mEngineKind;
     bool mSuppressFileMessages;
     argv::BinaryFilesMode mBinaryFilesMode;
+    bool mFullyDecompressMode;
     bool mPreferMMap;
     bool mColoring;
     bool mShowFileNames;

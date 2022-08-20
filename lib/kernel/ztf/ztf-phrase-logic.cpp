@@ -4,8 +4,8 @@
  *  icgrep is a trademark of International Characters.
  */
 
-#include "ztf-phrase-logic.h"
-#include "ztf-phrase-scan.h"
+#include <kernel/ztf/ztf-phrase-logic.h>
+#include <kernel/ztf/ztf-phrase-scan.h>
 
 #include <re/adt/re_name.h>
 #include <re/adt/re_re.h>

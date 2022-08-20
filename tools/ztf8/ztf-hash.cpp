@@ -45,7 +45,7 @@
 #include <iostream>
 #include <iomanip>
 #include <kernel/pipeline/pipeline_builder.h>
-#include "ztf-logic.h"
+#include <kernel/ztf/ztf-logic.h>
 #include "ztf-scan.h"
 #ifdef ENABLE_PAPI
 #include <util/papi_helper.hpp>

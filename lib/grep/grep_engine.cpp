@@ -69,10 +69,9 @@
 #include <kernel/util/debug_display.h>
 #include <util/aligned_allocator.h>
 
-#include "../../tools/ztf8/ztf-logic.h"
-#include "../../tools/ztf8/ztf-scan.h"
-#include "../../tools/ztf8/ztf-phrase-scan.h"
-#include "../../tools/ztf8/ztf-phrase-logic.h"
+#include <kernel/ztf/ztf-logic.h>
+#include <kernel/ztf/ztf-phrase-scan.h>
+#include <kernel/ztf/ztf-phrase-logic.h>
 
 using namespace llvm;
 using namespace cc;
@@ -730,7 +729,7 @@ StreamSet * GrepEngine::grepPipeline(const std::unique_ptr<ProgramBuilder> & P, 
 }
 
 void ZTFGrepEngine::ZTFGrepPipeline(const std::unique_ptr<ProgramBuilder> & P, StreamSet * const ByteStream, StreamSet * const decoded_stream, bool matchOnlyMode) {
-    if (argv::FullyDecompressFlag || !(hasComponent(mExternalComponents, Component::WordOnlySubRE))) {
+    if (mFullyDecompressMode || !(hasComponent(mExternalComponents, Component::WordOnlySubRE))) {
         //get fully decompressed byte stream
         getDecompressedBytes(P, ByteStream, decoded_stream, true);
         mBinaryFilesMode = argv::Text;

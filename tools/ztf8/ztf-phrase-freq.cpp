@@ -1,11 +1,11 @@
 #include "ztf-phrase-freq.h"
-#include "common.h"
 #include <llvm/IR/Function.h>                      // for Function, Function...
 #include <llvm/IR/Module.h>                        // for Module
 #include <llvm/Support/CommandLine.h>              // for ParseCommandLineOp...
 #include <llvm/Support/Debug.h>                    // for dbgs
 #include <kernel/core/kernel_builder.h>
 #include <kernel/core/streamset.h>
+#include <kernel/ztf/common.h>
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/raw_ostream.h>
 #include <boost/intrusive/detail/math.hpp>

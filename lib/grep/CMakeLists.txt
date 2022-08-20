@@ -20,6 +20,7 @@ DEPS
     kernel.streamutils
     kernel.util
     kernel.unicode
+    kernel.ztf
     re.parse
     re.unicode
     re.transforms
