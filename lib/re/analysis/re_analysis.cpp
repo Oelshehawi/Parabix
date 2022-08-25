@@ -605,7 +605,9 @@ struct SubExpressionTransformer final : public RE_Transformer {
         for (const auto range : *cc) {
             const auto lo = re::lo_codepoint(range);
             const auto hi = re::hi_codepoint(range);
-            if (mNonWordOnlySet.intersects(lo, hi)) mNonWordFound = true;
+            if (mNonWordOnlySet.intersects(lo, hi)) {
+                mNonWordFound = true;
+            }
             // else mMaxSubRegexLen++;
         }
         return cc;
@@ -614,12 +616,10 @@ struct SubExpressionTransformer final : public RE_Transformer {
     RE * transformSeq(Seq * seq) override { // seq "bed coffee" => returns coffee
         // errs() << "transformSeq " << Printer_RE::PrintRE(seq) << '\n';
         SmallVector<RE *, 16> elems;
-        bool any_changed = false;
         mMaxSubRegexLen = 0;
         for (RE * e : *seq) {
             mNonWordFound = false;
             RE * e1 = transform(e);
-            if (e1 != e) any_changed = true;
             if (mNonWordFound) {
                 if (elems.size() > mMaxSubRegexLen) {
                     mMaxSubRegexLen = elems.size();
@@ -661,12 +661,30 @@ struct SubExpressionTransformer final : public RE_Transformer {
     }
 
     RE * transformRep(Rep * r) override {
-        // sub-expr length is upper bounded by sequence lower-bound
+        // sub-expr bounds remain same as sequence bounds
         RE * x0 = r->getRE();
         RE * x = transform(x0);
-        mSubExpression = makeRep(x, r->getLB(), r->getLB());
+        mSubExpression = makeRep(x, r->getLB(), r->getUB());
         // errs() << "mSubExpression rep " << Printer_RE::PrintRE(mSubExpression) << '\n';
         return mSubExpression;
+    }
+
+    RE * transformName(Name * nm) {
+        // if (mNameTransform == NameTransformationMode::None) {
+        //     return nm;
+        // }
+        mNonWordFound = false;
+        RE * const defn = nm->getDefinition();
+        if (LLVM_UNLIKELY(defn == nullptr)) {
+            UndefinedNameError(nm);
+        }
+        RE * t = transform(defn);
+        if (mNonWordFound) {
+            // errs() << "transformName " << Printer_RE::PrintRE(t) << '\n';
+            return makeSeq();
+        }
+        if (t == defn) return nm;
+        return t;
     }
 
     unsigned getSubRegexLen() {
