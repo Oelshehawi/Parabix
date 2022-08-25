@@ -675,7 +675,7 @@ bool PipelineCommonGraphFunctions::isKernelStateFree(const size_t kernel) const 
 #else
     const Kernel * const kernelObj = getKernel(kernel);
 
-    assert (kernelObj->isGenerated());
+//    assert (kernelObj->isGenerated());
 
     bool isExplicitlyMarkedAsStateFree = false;
     bool hasOverridableAttribute = false;

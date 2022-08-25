@@ -901,9 +901,9 @@ void PipelineCompiler::ensureSufficientOutputSpace(BuilderRef b, const BufferPor
 
     Value * const priorBuffer = buffer->expandBuffer(b, produced, consumed, required);    
     if (isa<DynamicBuffer>(buffer)) {
-        #ifdef PRINT_DEBUG_MESSAGES
-        debugPrint(b, prefix + "_storingPriorBuffer %" PRIx64 " in %" PRIx64, priorBuffer, priorBufferPtr);
-        #endif
+//        #ifdef PRINT_DEBUG_MESSAGES
+//        debugPrint(b, prefix + "_storingPriorBuffer %" PRIx64 " in %" PRIx64, priorBuffer, priorBufferPtr);
+//        #endif
         if (mNumOfThreads != 1 || mIsNestedPipeline) {
             b->CreateStore(priorBuffer, priorBufferPtr);
             if (LLVM_UNLIKELY(mTraceDynamicBuffers)) {

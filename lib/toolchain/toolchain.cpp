@@ -54,6 +54,12 @@ DebugOptions(cl::desc("Debugging Options"), cl::values(clEnumVal(VerifyIR, "Run 
                         clEnumVal(DisableIndirectBranch, "Disable use of indirect branches in kernel code."),
                         clEnumVal(DisableThreadLocalStreamSets, "Disable use of thread-local memory for streamsets within the same partition."),
 
+                        clEnumVal(AllowUnsafeFileIO, "Force the MMap and Memory source kernel to always provide raw file data "
+                                                     "to the system instead of allocating a safe buffer for the final stride. "
+                                                     "Can improve performance at the cost of potential segfaults."),
+
+
+
                         #ifdef ENABLE_PAPI
                         clEnumVal(DisplayPAPICounterThreadTotalsOnly, "Disable per-kernel PAPI counters when given a valid PapiCounters list."),
                         #endif
