@@ -115,7 +115,7 @@ int main(int argc, char *argv[]) {
             if (argv::WithFilenameFlag) grep->showFileNames();
             if (argv::LineNumberFlag) grep->showLineNumbers();
             if (argv::InitialTabFlag) grep->setInitialTab();
-            if (argv::FullyDecompressFlag) grep->setFullyDecompressOption(argv::FullyDecompressFlag);
+            // if (argv::FullyDecompressFlag) grep->setFullyDecompressOption(argv::FullyDecompressFlag);
            break;
         case argv::CountOnly:
             grep = std::make_unique<grep::CountOnlyEngine>(driver);

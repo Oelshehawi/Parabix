@@ -101,7 +101,6 @@ public:
 
     void suppressFileMessages(bool b = true) {mSuppressFileMessages = b;}
     void setBinaryFilesOption(argv::BinaryFilesMode mode) {mBinaryFilesMode = mode;}
-    void setFullyDecompressOption(bool mode) {mFullyDecompressMode = mode;}
     void setRecordBreak(GrepRecordBreakKind b);
     void initFileResult(const std::vector<boost::filesystem::path> & filenames);
     bool haveFileBatch();
@@ -153,7 +152,6 @@ protected:
     EngineKind mEngineKind;
     bool mSuppressFileMessages;
     argv::BinaryFilesMode mBinaryFilesMode;
-    bool mFullyDecompressMode;
     bool mPreferMMap;
     bool mColoring;
     bool mShowFileNames;
@@ -258,6 +256,7 @@ private:
 class ZTFGrepEngine final : public GrepEngine {
 public:
     ZTFGrepEngine(BaseDriver & driver);
+    void addExternalStreams(const std::unique_ptr<kernel::ProgramBuilder> & P, std::unique_ptr<kernel::GrepKernelOptions> & options, re::RE * regexp, kernel::StreamSet * indexMask = nullptr);
     void getDecompressedBytes(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * const ByteStream, kernel::StreamSet * const decoded_bytes, bool fullyDecompress);
     void ZTFGrepPipeline(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * const ByteStream, kernel::StreamSet * const decoded_byteStream, bool matchOnly = false);
     void ZTFPreliminaryGrep(const std::unique_ptr<kernel::ProgramBuilder> &P, re::RE * re, kernel::StreamSet * Source, kernel::StreamSet * Results);
@@ -267,10 +266,12 @@ public:
     private:
     uint64_t doGrep(const std::vector<std::string> & fileNames, std::ostringstream & strm) override;
     protected:
+    bool mFullyDecompressMode;
     kernel::StreamSet * mCmpLineBreakStream;
     kernel::StreamSet * mCmpU8index;
     kernel::StreamSet * mCmpGCB_stream;
     kernel::StreamSet * mCmpWordBoundary_stream;
+    std::map<std::string, kernel::StreamSet *> mCmpPropertyStreamMap;
 };
 
 class CountOnlyEngine final : public GrepEngine {

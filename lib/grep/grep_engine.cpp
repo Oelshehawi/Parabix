@@ -182,6 +182,7 @@ EmitMatchesEngine::EmitMatchesEngine(BaseDriver &driver)
 
 ZTFGrepEngine::ZTFGrepEngine(BaseDriver &driver)
 : GrepEngine(driver), 
+    mFullyDecompressMode(argv::FullyDecompressFlag),
     mCmpLineBreakStream(nullptr),
     mCmpU8index(nullptr),
     mCmpGCB_stream(nullptr),
@@ -665,35 +666,111 @@ void GrepEngine::U8indexedGrep(const std::unique_ptr<ProgramBuilder> & P, re::RE
 }
 
 void ZTFGrepEngine::ZTFPreliminaryGrep(const std::unique_ptr<ProgramBuilder> & P, re::RE * re, StreamSet * Source, StreamSet * Results) {
-    StreamSet * SourceStream = Source;
-    /// TODO: add the Unicode grep and U8indexedGrep logic as per the RE properties
     std::unique_ptr<kernel::GrepKernelOptions> options;
     std::pair<int, int> lengths;
     if (UnicodeIndexing) {
         options = std::make_unique<GrepKernelOptions>(&cc::Unicode);
         lengths = getLengthRange(re, &cc::Unicode);
-        // More options to be added
+        const auto UnicodeSets = re::collectCCs(re, cc::Unicode);
+        if (UnicodeSets.empty()) {
+        // All inputs will be externals.   Do not register a source stream.
+        options->setRE(re);
+        } else {
+            auto mpx = std::make_shared<MultiplexedAlphabet>("mpx", UnicodeSets);
+            re = transformCCs(mpx, re);
+            options->setRE(re);
+            auto mpx_basis = mpx->getMultiplexedCCs();
+            StreamSet * const u8CharClasses = P->CreateStreamSet(mpx_basis.size());
+            StreamSet * const CharClasses = P->CreateStreamSet(mpx_basis.size());
+            P->CreateKernelCall<CharClassesKernel>(mpx_basis, Source, u8CharClasses);
+            FilterByMask(P, mCmpU8index, u8CharClasses, CharClasses);
+            options->setSource(CharClasses);
+            options->addAlphabet(mpx, CharClasses);
+        }
+        StreamSet * const MatchResults = P->CreateStreamSet(1, 1);
+        options->setResults(MatchResults);
+        addExternalStreams(P, options, re, mCmpU8index);
+        P->CreateKernelCall<ICGrepKernel>(std::move(options));
+        StreamSet * u8index1 = P->CreateStreamSet(1, 1);
+        P->CreateKernelCall<AddSentinel>(mCmpU8index, u8index1);
+        SpreadByMask(P, u8index1, MatchResults, Results);
     }
     else {
         // llvm::errs() << "ZTFPreliminaryGrep - U8indexedGrep" << "\n";
         options = std::make_unique<GrepKernelOptions>(&cc::UTF8);
         lengths = getLengthRange(re, &cc::UTF8);
+        options->setSource(Source);
+        options->setResults(Results);
         if (hasComponent(mExternalComponents, Component::UTF8index)) {
             options->setIndexingTransformer(&mUTF8_Transformer, mCmpU8index);
             options->setRE(re);
         } else {
             options->setRE(toUTF8(re));
         }
+        addExternalStreams(P, options, re);
+        P->CreateKernelCall<ICGrepKernel>(std::move(options));
     }
-    options->setSource(SourceStream);
-    options->setResults(Results);
-    addExternalStreams(P, options, re);
-    P->CreateKernelCall<ICGrepKernel>(std::move(options));
+}
+
+void ZTFGrepEngine::addExternalStreams(const std::unique_ptr<ProgramBuilder> & P, std::unique_ptr<GrepKernelOptions> & options, re::RE * regexp, StreamSet * indexMask) {
+    std::set<re::Name *> externals;
+    re::gatherNames(regexp, externals);
+    for (const auto & e : externals) {
+        auto name = e->getFullName();
+        const auto f = mPropertyStreamMap.find(name);
+        if (f != mPropertyStreamMap.end()) {
+            //errs() << "adding external: " << name << "\n";
+            if (indexMask == nullptr) {
+                options->addExternal(name, f->second);
+            } else {
+                StreamSet * iExternal_stream = P->CreateStreamSet(1, 1);
+                FilterByMask(P, indexMask, f->second, iExternal_stream);
+                options->addExternal(name, iExternal_stream);
+            }
+        }
+    }
+    if (hasGraphemeClusterBoundary(mSubExpression)) {
+        assert (mCmpGCB_stream);
+        if (indexMask == nullptr) {
+            options->addExternal("\\b{g}", mCmpGCB_stream);
+            //P->CreateKernelCall<DebugDisplayKernel>("\\b{g}[U8indexed]", mCmpGCB_stream);
+        } else {
+            StreamSet * iGCB_stream = P->CreateStreamSet(1, 1);
+            FilterByMask(P, indexMask, mCmpGCB_stream, iGCB_stream);
+            options->addExternal("\\b{g}", iGCB_stream, 1);
+            //P->CreateKernelCall<DebugDisplayKernel>("\\b{g}", iGCB_stream);
+        }
+    }
+    if (hasWordBoundary(mSubExpression)) {
+        assert (mCmpWordBoundary_stream);
+        if (indexMask == nullptr) {
+            options->addExternal("\\b", mCmpWordBoundary_stream);
+            //P->CreateKernelCall<DebugDisplayKernel>("\\b[U8indexed]", mCmpWordBoundary_stream);
+        } else {
+            StreamSet * iWordBoundary_stream = P->CreateStreamSet(1, 1);
+            FilterByMask(P, indexMask, mCmpWordBoundary_stream, iWordBoundary_stream);
+            options->addExternal("\\b", iWordBoundary_stream, 1);
+            //P->CreateKernelCall<DebugDisplayKernel>("\\b", iWordBoundary_stream);
+        }
+    }
+    if (hasComponent(mExternalComponents, Component::UTF8index)) {
+        if (indexMask == nullptr) {
+            options->addExternal("UTF8_index", mCmpU8index); // needs different string name? (UTF8_index_cmp)
+        }
+    }
+    if (mGrepRecordBreak == GrepRecordBreakKind::Unicode) {
+        if (indexMask == nullptr) {
+            options->addExternal("UTF8_LB", mCmpLineBreakStream);
+        } else {
+            StreamSet * iU8_LB = P->CreateStreamSet(1, 1);
+            FilterByMask(P, indexMask, mLineBreakStream, iU8_LB);
+            options->addExternal("UTF8_LB", iU8_LB);
+        }
+    }
 }
 
 void ZTFGrepEngine::ZTFDecmpLogic(const std::unique_ptr<ProgramBuilder> & P, StreamSet * Source, StreamSet * const Results, StreamSet * const decoded_stream, bool matchOnlyMode) {
-    StreamSet * SourceBytes = Source;
-    StreamSet * const ztfHash_u8bytes = SelectiveDecompressionLogic(P, encodingScheme1, SourceBytes, Results, matchOnlyMode);
+    StreamSet * const ztfHash_u8bytes = SelectiveDecompressionLogic(P, encodingScheme1, Source, Results, matchOnlyMode);
     getDecompressedBytes(P, ztfHash_u8bytes, decoded_stream, false);
 }
 
@@ -736,52 +813,86 @@ void ZTFGrepEngine::ZTFGrepPipeline(const std::unique_ptr<ProgramBuilder> & P, S
         return;
     }
     // Selective decompression
-    // StreamSet * SourceStream = getBasis(P, ByteStream);
+    StreamSet * SourceStream = getBasis(P, ByteStream);
     mCmpLineBreakStream = nullptr;
     mCmpU8index = nullptr;
     mCmpGCB_stream = nullptr;
     mCmpWordBoundary_stream = nullptr;
+    mCmpPropertyStreamMap.clear();
     StreamSet * CandidateMatches = P->CreateStreamSet(1, 1);
     //=======================================================================================
     // ztf-grep prologue
     Scalar * const callbackObject = P->getInputScalar("callbackObject");
-    if (mBinaryFilesMode == argv::Text) {
-        mNullMode = NullCharMode::Data;
-    } else if (mBinaryFilesMode == argv::WithoutMatch) {
-        mNullMode = NullCharMode::Abort;
-    } else {
-        mNullMode = NullCharMode::Break;
-    }
+    mNullMode = NullCharMode::Break;
     // make these local streams
     mCmpLineBreakStream = P->CreateStreamSet(1, 1);
     mCmpU8index = P->CreateStreamSet(1, 1);
     if (mGrepRecordBreak == GrepRecordBreakKind::Unicode) {
-        UnicodeLinesLogic(P, ByteStream, mCmpLineBreakStream, mCmpU8index, UnterminatedLineAtEOF::Add1, mNullMode, callbackObject);
+        UnicodeLinesLogic(P, SourceStream, mCmpLineBreakStream, mCmpU8index, UnterminatedLineAtEOF::Add1, mNullMode, callbackObject);
     }
     else {
         if (hasComponent(mExternalComponents, Component::UTF8index)) {
-            P->CreateKernelCall<UTF8_index>(ByteStream, mCmpU8index);
+            P->CreateKernelCall<UTF8_index>(SourceStream, mCmpU8index);
         }
         if (mGrepRecordBreak == GrepRecordBreakKind::LF) {
-            Kernel * k = P->CreateKernelCall<UnixLinesKernelBuilder>(ByteStream, mCmpLineBreakStream, UnterminatedLineAtEOF::Add1, mNullMode, callbackObject);
+            Kernel * k = P->CreateKernelCall<UnixLinesKernelBuilder>(SourceStream, mCmpLineBreakStream, UnterminatedLineAtEOF::Add1, mNullMode, callbackObject);
             if (mNullMode == NullCharMode::Abort) {
                 k->link("signal_dispatcher", kernel::signal_dispatcher);
             }
         } else { // if (mGrepRecordBreak == GrepRecordBreakKind::Null) {
-            P->CreateKernelCall<NullDelimiterKernel>(ByteStream, mCmpLineBreakStream, UnterminatedLineAtEOF::Add1);
+            P->CreateKernelCall<NullDelimiterKernel>(SourceStream, mCmpLineBreakStream, UnterminatedLineAtEOF::Add1);
         }
     }
     if (hasComponent(mExternalComponents, Component::GraphemeClusterBoundary)) {
         mCmpGCB_stream = P->CreateStreamSet(1, 1);
-        GraphemeClusterLogic(P, &mUTF8_Transformer, ByteStream, mCmpU8index, mCmpGCB_stream);
+        GraphemeClusterLogic(P, &mUTF8_Transformer, SourceStream, mCmpU8index, mCmpGCB_stream);
     }
     if (hasComponent(mExternalComponents, Component::WordBoundary)) {
         mCmpWordBoundary_stream = P->CreateStreamSet(1, 1);
-        WordBoundaryLogic(P, &mUTF8_Transformer, ByteStream, mCmpU8index, mCmpWordBoundary_stream);
+        WordBoundaryLogic(P, &mUTF8_Transformer, SourceStream, mCmpU8index, mCmpWordBoundary_stream);
     }
-    // mPropertyStreamMap to be initialized
-    //=======================================================================================
-    ZTFPreliminaryGrep(P, mSubExpression, ByteStream, CandidateMatches);
+    StreamSet * U21_basis = nullptr;
+    std::set<int> fixedRefSupport;
+    for (auto e : mExternalNames) { // may not be needed for first grep pass?
+        re::RE * def = e->getDefinition();
+        auto name = e->getFullName();
+        auto f = mCmpPropertyStreamMap.find(name);
+        if (f == mCmpPropertyStreamMap.end()) {
+            if (isa<re::PropertyExpression>(def)) {
+                //errs() << "preparing external: " << name << "\n";
+                StreamSet * property = P->CreateStreamSet(1, 1);
+                mCmpPropertyStreamMap.emplace(name, property);
+                P->CreateKernelCall<UnicodePropertyKernelBuilder>(e, SourceStream, property);
+            } else if (re::CC * cc = dyn_cast<re::CC>(def)) {
+                StreamSet * ccStrm = P->CreateStreamSet(1, 1);
+                mCmpPropertyStreamMap.emplace(name, ccStrm);
+                std::vector<re::CC *> ccs = {cc};
+                P->CreateKernelCall<CharClassesKernel>(ccs, SourceStream, ccStrm);
+            } else if (re::Reference * ref = dyn_cast<re::Reference>(def)) {
+                auto mapping = mRefInfo.twixtREs.find(ref->getName());
+                if (mapping == mRefInfo.twixtREs.end()) {
+                    llvm::report_fatal_error("grep engine: undefined reference!");
+                }
+                auto rg1 = getLengthRange(ref->getCapture(), &cc::Unicode);
+                auto rg2 = getLengthRange(mapping->second, &cc::Unicode);
+                if ((rg1.first == rg1.second) && (rg2.first == rg2.second)) {
+                    int dist = rg1.first + rg2.first;
+                    //llvm::errs() << "Fixed reference distance " << dist << "\n";
+                    if (fixedRefSupport.count(dist) == 0) {
+                        if (!U21_basis) {
+                            U21_basis = P->CreateStreamSet(21, 1);
+                            P->CreateKernelCall<UTF8_Decoder>(SourceStream, U21_basis);
+                        }
+                        StreamSet * M = P->CreateStreamSet(1, 1);
+                        mCmpPropertyStreamMap.emplace(name, M);
+                        P->CreateKernelCall<FixedDistanceMatchesKernel>(dist, U21_basis, M);
+                        fixedRefSupport.insert(dist);
+                    }
+                }
+            }
+        }
+    }
+    ZTFPreliminaryGrep(P, mSubExpression, SourceStream, CandidateMatches);
     ZTFDecmpLogic(P, ByteStream, CandidateMatches, decoded_stream, matchOnlyMode);
 }
 
