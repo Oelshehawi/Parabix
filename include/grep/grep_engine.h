@@ -19,6 +19,7 @@
 #include <re/parse/GLOB_parser.h>
 #include <kernel/core/callback.h>
 #include <kernel/util/linebreak_kernel.h>
+#include <kernel/util/debug_display.h>
 #include <grep/grep_kernel.h>
 
 namespace re { class CC; }
@@ -195,6 +196,7 @@ protected:
     kernel::StreamSet * mWordBoundary_stream;
     re::UTF8_Transformer mUTF8_Transformer;
     pthread_t mEngineThread;
+    kernel::ParabixIllustrator * mIllustrator;
 };
 
 
@@ -255,7 +257,7 @@ private:
 
 class ZTFGrepEngine final : public GrepEngine {
 public:
-    ZTFGrepEngine(BaseDriver & driver);
+    ZTFGrepEngine(BaseDriver & driver, bool fullyDecompress);
     void addExternalStreams(const std::unique_ptr<kernel::ProgramBuilder> & P, std::unique_ptr<kernel::GrepKernelOptions> & options, re::RE * regexp, kernel::StreamSet * indexMask = nullptr);
     void getDecompressedBytes(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * const ByteStream, kernel::StreamSet * const decoded_bytes, bool fullyDecompress);
     void ZTFGrepPipeline(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * const ByteStream, kernel::StreamSet * const decoded_byteStream, bool matchOnly = false);
