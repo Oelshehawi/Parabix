@@ -517,7 +517,7 @@ std::string makeSourceName(StringRef prefix, const unsigned fieldWidth, const un
     std::string tmp;
     tmp.reserve(64);
     llvm::raw_string_ostream out(tmp);
-    out << codegen::SegmentSize << '@' << fieldWidth;
+    out << prefix << '_' << codegen::SegmentSize << '@' << fieldWidth;
     if (numOfStreams != 1) {
         out << ':' << numOfStreams;
     }
