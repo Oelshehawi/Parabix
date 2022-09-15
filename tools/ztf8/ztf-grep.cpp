@@ -108,9 +108,11 @@ int main(int argc, char *argv[]) {
     }
 
     std::unique_ptr<grep::GrepEngine> grep;
+    bool fullyDecmp = false;
+    if (argv::FullyDecompressFlag) fullyDecmp = true;
     switch (argv::Mode) {
         case argv::NormalMode:
-            grep = std::make_unique<grep::ZTFGrepEngine>(driver);
+            grep = std::make_unique<grep::ZTFGrepEngine>(driver, fullyDecmp);
             if (argv::MaxCountFlag) grep->setMaxCount(argv::MaxCountFlag);
             if (argv::WithFilenameFlag) grep->showFileNames();
             if (argv::LineNumberFlag) grep->showLineNumbers();
