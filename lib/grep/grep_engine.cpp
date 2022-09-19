@@ -782,10 +782,10 @@ void ZTFGrepEngine::addExternalStreams(const std::unique_ptr<ProgramBuilder> & P
     }
 }
 
-void ZTFGrepEngine::ZTFDecmpLogic(const std::unique_ptr<ProgramBuilder> & P, StreamSet * Source, StreamSet * const Results, StreamSet * const decoded_stream, bool matchOnlyMode) {
-    StreamSet * const ztfHash_u8bytes = SelectiveDecompressionLogic(P, encodingScheme1, Source, Results, matchOnlyMode);
-    getDecompressedBytes(P, ztfHash_u8bytes, decoded_stream, false);
-}
+// void ZTFGrepEngine::ZTFDecmpLogic(const std::unique_ptr<ProgramBuilder> & P, StreamSet * Source, StreamSet * const Results, StreamSet * const decoded_stream, bool matchOnlyMode) {
+    // StreamSet * const ztfHash_u8bytes = SelectiveDecompressionLogic(P, encodingScheme1, Source, Results, matchOnlyMode);
+    // getDecompressedBytes(P, ztfHash_u8bytes, decoded_stream, false);
+// }
 
 StreamSet * GrepEngine::grepPipeline(const std::unique_ptr<ProgramBuilder> & P, StreamSet * InputStream) {
     StreamSet * SourceStream = getBasis(P, InputStream);
@@ -825,8 +825,16 @@ void ZTFGrepEngine::ZTFGrepPipeline(const std::unique_ptr<ProgramBuilder> & P, S
         mBinaryFilesMode = argv::Text;
         return;
     }
+    // independent of matches in compressed data
+    StreamSet * BasisBits = P->CreateStreamSet(ENCODING_BITS, 1);
+    Selected_S2P(P, ByteStream, BasisBits);
+    StreamSet * const dictStart = P->CreateStreamSet(1);
+    StreamSet * const dictStartPS = P->CreateStreamSet(1); // lookahead dictStart by 2 buts to calculate the offset starting from 2nd segment.
+    StreamSet * const dictEnd = P->CreateStreamSet(1);
+    P->CreateKernelCall<PostProcessCandidateMatches>(encodingScheme1, BasisBits, /*Results,*/ dictStart, dictEnd); // add 1-bit at the end of dictEnd stream
+
     // Selective decompression
-    StreamSet * SourceStream = getBasis(P, ByteStream);
+    StreamSet * SourceStream = ByteStream; //getBasis(P, ByteStream);
     mCmpLineBreakStream = nullptr;
     mCmpU8index = nullptr;
     mCmpGCB_stream = nullptr;
@@ -906,7 +914,22 @@ void ZTFGrepEngine::ZTFGrepPipeline(const std::unique_ptr<ProgramBuilder> & P, S
         }
     }
     ZTFPreliminaryGrep(P, mSubExpression, SourceStream, CandidateMatches);
-    ZTFDecmpLogic(P, ByteStream, CandidateMatches, decoded_stream, matchOnlyMode);
+
+    StreamSet * const MatchedSegmentEnds = P->CreateStreamSet();
+    P->CreateKernelCall<MatchedSegmentsKernel>(CandidateMatches, dictStart, MatchedSegmentEnds, dictStartPS);
+    StreamSet * MatchesBySegment = P->CreateStreamSet(1, 1);
+    FilterByMask(P, dictStart, MatchedSegmentEnds, MatchesBySegment);
+    StreamSet * MatchesBySegmentFinal = P->CreateStreamSet(1, 1);
+    P->CreateKernelCall<ShiftBack>(MatchesBySegment, MatchesBySegmentFinal, 1);
+    StreamSet * const dictStartPartialSum = P->CreateStreamSet(1, 64);
+    P->CreateKernelCall<SegOffsetCalcKernel>(ByteStream, dictStartPS, dictStartPartialSum, true);
+    StreamSet * const dictEndPartialSum = P->CreateStreamSet(1, 64);
+    P->CreateKernelCall<SegOffsetCalcKernel>(ByteStream, dictEnd, dictEndPartialSum, false);
+    StreamSet * const filtered_bytes = P->CreateStreamSet(1, 8);
+    P->CreateKernelCall<SegmentFilter>(MatchesBySegmentFinal, dictStartPartialSum, dictEndPartialSum, ByteStream, filtered_bytes);
+
+    getDecompressedBytes(P, filtered_bytes, decoded_stream, false);
+    // ZTFDecmpLogic(P, ByteStream, CandidateMatches, decoded_stream, matchOnlyMode);
 }
 
 void GrepEngine::grepCodeGen() {
@@ -1200,7 +1223,7 @@ void EmitMatchesEngine::grepPipeline(const std::unique_ptr<ProgramBuilder> & E, 
 void ZTFGrepEngine::grepPipeline(const std::unique_ptr<ProgramBuilder> & E, StreamSet * ByteStream) {
     // llvm::errs() << "ZTFGrepEngine::grepPipeline" << "\n";
     // E->CreateKernelCall<StdOutKernel>(ByteStream);
-    StreamSet * SourceStream = getBasis(E, ByteStream);
+    StreamSet * SourceStream = ByteStream; //getBasis(E, ByteStream);
     grepPrologue(E, SourceStream);
 
     prepareExternalStreams(E, SourceStream);

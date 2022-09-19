@@ -262,7 +262,7 @@ public:
     void getDecompressedBytes(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * const ByteStream, kernel::StreamSet * const decoded_bytes, bool fullyDecompress);
     void ZTFGrepPipeline(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * const ByteStream, kernel::StreamSet * const decoded_byteStream, bool matchOnly = false);
     void ZTFPreliminaryGrep(const std::unique_ptr<kernel::ProgramBuilder> &P, re::RE * re, kernel::StreamSet * Source, kernel::StreamSet * Results);
-    void ZTFDecmpLogic(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * Source, kernel::StreamSet * const Results, kernel::StreamSet * const decompressed_basis, bool matchOnly = false);
+    // void ZTFDecmpLogic(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * Source, kernel::StreamSet * const Results, kernel::StreamSet * const decompressed_basis, bool matchOnly = false);
     void grepPipeline(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * ByteStream);
     void grepCodeGen() override;
     private:
