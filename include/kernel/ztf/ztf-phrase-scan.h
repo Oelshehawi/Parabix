@@ -193,5 +193,15 @@ private:
     void generateMultiBlockLogic(BuilderRef iBuilder, llvm::Value * const numOfStrides) override;
 };
 
+class FilterByMask_new final : public MultiBlockKernel {
+public:
+    FilterByMask_new(BuilderRef b,
+                    StreamSet * const MatchedSegmentSpans,
+                    StreamSet * const byteData,
+                    StreamSet * const filtereData,
+                    unsigned strideBlocks = 8);
+private:
+    void generateMultiBlockLogic(BuilderRef iBuilder, llvm::Value * const numOfStrides) override;
+};
 }
 #endif

@@ -399,8 +399,11 @@ Ref self: https://www.geeksforgeeks.org/perl-assertions-in-regex/
     }
 }
 void ZTFGrepEngine::getDecompressedBytes(const std::unique_ptr<ProgramBuilder> & P, StreamSet * const coded_bytes, StreamSet * const decoded_bytes, bool fullyDecompress) {
+    bool useFilterByMask = false;
+
     StreamSet * const ztfHashBasis = P->CreateStreamSet(8);
-    P->CreateKernelCall<S2PKernel>(coded_bytes, ztfHashBasis);
+    Selected_S2P(P, coded_bytes, ztfHashBasis);
+    // P->CreateKernelCall<S2PKernel>(coded_bytes, ztfHashBasis);
     StreamSet * const ztfInsertionLengths = P->CreateStreamSet(5);
     P->CreateKernelCall<ZTF_PhraseExpansionDecoder>(encodingScheme1, ztfHashBasis, ztfInsertionLengths, fullyDecompress);
     StreamSet * const ztfRunSpreadMask = InsertionSpreadMask(P, ztfInsertionLengths);
@@ -435,11 +438,17 @@ void ZTFGrepEngine::getDecompressedBytes(const std::unique_ptr<ProgramBuilder> &
             u8bytes = output_bytes;
         }
     }
-    StreamSet * const decoded = P->CreateStreamSet(8);
-    P->CreateKernelCall<S2PKernel>(u8bytes, decoded);
-    StreamSet * const decoded_basis = P->CreateStreamSet(8);
-    FilterByMask(P, hashtableSpan, decoded, decoded_basis);
-    P->CreateKernelCall<P2SKernel>(decoded_basis, decoded_bytes);
+    if(useFilterByMask) {
+        StreamSet * const decoded = P->CreateStreamSet(8);
+        // P->CreateKernelCall<S2PKernel>(u8bytes, decoded);
+        Selected_S2P(P, u8bytes, decoded);
+        StreamSet * const decoded_basis = P->CreateStreamSet(8);
+        FilterByMask(P, hashtableSpan, decoded, decoded_basis);
+        P->CreateKernelCall<P2SKernel>(decoded_basis, decoded_bytes);
+    }
+    else {
+        P->CreateKernelCall<FilterByMask_new>(hashtableSpan, u8bytes, decoded_bytes);
+    }
     return;
 }
 
@@ -834,7 +843,10 @@ void ZTFGrepEngine::ZTFGrepPipeline(const std::unique_ptr<ProgramBuilder> & P, S
     P->CreateKernelCall<PostProcessCandidateMatches>(encodingScheme1, BasisBits, /*Results,*/ dictStart, dictEnd); // add 1-bit at the end of dictEnd stream
 
     // Selective decompression
-    StreamSet * SourceStream = ByteStream; //getBasis(P, ByteStream);
+    StreamSet * SourceStream = ByteStream;
+    if (hasComponent(mExternalComponents, Component::S2P)) {
+        SourceStream = BasisBits;
+    }
     mCmpLineBreakStream = nullptr;
     mCmpU8index = nullptr;
     mCmpGCB_stream = nullptr;
@@ -1223,7 +1235,7 @@ void EmitMatchesEngine::grepPipeline(const std::unique_ptr<ProgramBuilder> & E, 
 void ZTFGrepEngine::grepPipeline(const std::unique_ptr<ProgramBuilder> & E, StreamSet * ByteStream) {
     // llvm::errs() << "ZTFGrepEngine::grepPipeline" << "\n";
     // E->CreateKernelCall<StdOutKernel>(ByteStream);
-    StreamSet * SourceStream = ByteStream; //getBasis(E, ByteStream);
+    StreamSet * SourceStream = getBasis(E, ByteStream);
     grepPrologue(E, SourceStream);
 
     prepareExternalStreams(E, SourceStream);

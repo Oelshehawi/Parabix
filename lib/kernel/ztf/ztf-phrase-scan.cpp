@@ -3289,3 +3289,126 @@ void SegmentFilter::generateMultiBlockLogic(BuilderRef b, Value * const numOfStr
     // b->CallPrintInt("strideProduced-final", strideProduced);
     b->setProducedItemCount("filtereData", strideProduced);
 }
+
+FilterByMask_new::FilterByMask_new(BuilderRef b,
+                                StreamSet * const mask,
+                                StreamSet * const byteData,
+                                StreamSet * const filtereData,
+                                unsigned strideBlocks)
+: MultiBlockKernel(b, "FilterByMask_new_" +  std::to_string(mask->getNumElements()) + "_" + std::to_string(byteData->getNumElements()),
+                   {Binding{"mask", mask, FixedRate()},
+                    Binding{"byteData", byteData, FixedRate()}},
+                   {}, {}, {}, {}) {
+    mOutputStreamSets.emplace_back("filtereData", filtereData, PopcountOf("mask"));
+    setStride(std::min(b->getBitBlockWidth() * strideBlocks, SIZE_T_BITS * SIZE_T_BITS));
+    addInternalScalar(b->getSizeTy(), "lastKnownStart");
+}
+void FilterByMask_new::generateMultiBlockLogic(BuilderRef b, Value * const numOfStrides) {
+    Type * const sizeTy = b->getSizeTy();
+    Constant * sz_ZERO = b->getSize(0);
+    Constant * sz_ONE = b->getSize(1);
+    Constant * sz_STRIDE = b->getSize(mStride);
+    Constant * sz_BLOCKWIDTH = b->getSize(b->getBitBlockWidth());
+    Constant * sz_BLOCKS_PER_STRIDE = b->getSize(mStride/b->getBitBlockWidth());
+
+    BasicBlock * const entry = b->GetInsertBlock();
+    BasicBlock * const startSegment = b->CreateBasicBlock("startSegment");
+    BasicBlock * const maskInit = b->CreateBasicBlock("maskInit");
+    BasicBlock * const updateLastStartPos = b->CreateBasicBlock("updateLastStartPos");
+    BasicBlock * const nextBlock = b->CreateBasicBlock("nextBlock");
+    BasicBlock * const strideProcessed = b->CreateBasicBlock("strideProcessed");
+    BasicBlock * const checkPrint = b->CreateBasicBlock("checkPrint");
+    BasicBlock * const filterData = b->CreateBasicBlock("filterData");
+    BasicBlock * const stridesDone = b->CreateBasicBlock("stridesDone");
+    BasicBlock * const finalFiltering = b->CreateBasicBlock("finalFiltering");
+    BasicBlock * const segmentDone = b->CreateBasicBlock("segmentDone");
+
+    Value * const produced = b->getProducedItemCount("filtereData");
+    Value * const availBytes = b->getAvailableItemCount("byteData");
+    Value * const initialProcessedLines = b->getProcessedItemCount("mask");
+    // b->CallPrintInt("initialProcessedLines", initialProcessedLines);
+    b->CreateBr(startSegment);
+
+    b->SetInsertPoint(startSegment);
+    PHINode * strideNo = b->CreatePHI(sizeTy, 2);
+    strideNo->addIncoming(sz_ZERO, entry);
+    PHINode * segProducedPhi = b->CreatePHI(sizeTy, 2);
+    segProducedPhi->addIncoming(produced, entry);
+    PHINode * segProcessedPhi = b->CreatePHI(sizeTy, 2);
+    segProcessedPhi->addIncoming(initialProcessedLines, entry);
+
+    Value * nextStrideNo = b->CreateAdd(strideNo, sz_ONE);
+    Value * segProcessedUpdate = b->CreateAdd(segProcessedPhi, sz_STRIDE);
+    Value * strideBlockOffset = b->CreateMul(strideNo, sz_BLOCKS_PER_STRIDE);
+    b->CreateBr(maskInit);
+
+    b->SetInsertPoint(maskInit);
+    PHINode * const blockNo = b->CreatePHI(sizeTy, 2);
+    blockNo->addIncoming(sz_ZERO, startSegment);
+    PHINode * const strideProduced = b->CreatePHI(sizeTy, 2);
+    strideProduced->addIncoming(segProducedPhi, startSegment);
+
+    Value * const nextBlockNo = b->CreateAdd(blockNo, sz_ONE);
+    Value * strideBlockIndex = b->CreateAdd(strideBlockOffset, blockNo);
+    Value * blockOffset = b->CreateMul(blockNo, sz_BLOCKWIDTH);
+    Value * block = b->loadInputStreamBlock("mask", sz_ZERO, strideBlockIndex);
+    Value * const popCnt = b->simd_popcount(b->getBitBlockWidth(), block);
+    Value * const countOnes = b->CreateZExtOrTrunc(b->CreateExtractElement(b->fwCast(16, popCnt), b->getInt32(0)), sizeTy);
+    Value * const countZeroes = b->CreateSub(sz_BLOCKWIDTH, countOnes);
+    Value * const lastKnownStart = b->getScalarField("lastKnownStart");
+
+    b->CreateCondBr(b->CreateAnd(b->CreateICmpUGT(countOnes, sz_ZERO),
+                                 b->CreateICmpEQ(lastKnownStart, sz_ZERO)), 
+                                 updateLastStartPos, checkPrint);
+    b->SetInsertPoint(updateLastStartPos);
+    Value * const newStart = b->CreateAdd(countZeroes, b->CreateAdd(segProcessedPhi, b->CreateMul(blockNo, sz_BLOCKWIDTH)));
+    b->setScalarField("lastKnownStart", newStart);
+    b->CreateBr(nextBlock);
+
+    b->SetInsertPoint(checkPrint);
+    b->CreateCondBr(b->CreateAnd(b->CreateICmpUGT(countZeroes, sz_ZERO),
+                                 b->CreateICmpUGT(lastKnownStart, sz_ZERO)),
+                                 filterData, nextBlock);
+
+    b->SetInsertPoint(filterData);
+    Value * const filterDataStartPos = b->getScalarField("lastKnownStart");
+    Value * const filterDataEndPos = b->CreateAdd(countOnes, b->CreateAdd(segProcessedPhi, b->CreateMul(blockNo, sz_BLOCKWIDTH)));
+    Value * const filterDataSize = b->CreateSub(filterDataEndPos, filterDataStartPos);
+    // b->CallPrintInt("produced-filterData", segProducedPhi);
+    // b->CallPrintInt("startPos-filterData", filterDataStartPos);
+    // b->CallPrintInt("size-filterData", filterDataSize);
+    b->CreateMemCpy(b->getRawOutputPointer("filtereData", segProducedPhi), b->getRawInputPointer("byteData", filterDataStartPos), filterDataSize, 1);
+    b->setScalarField("lastKnownStart", sz_ZERO);
+    Value * strideProducedUpdate = b->CreateAdd(strideProduced, filterDataSize);
+    b->CreateBr(nextBlock);
+
+    b->SetInsertPoint(nextBlock);
+    PHINode * strideProducedUpdatePhi = b->CreatePHI(sizeTy, 2);
+    strideProducedUpdatePhi->addIncoming(strideProducedUpdate, filterData);
+    strideProducedUpdatePhi->addIncoming(strideProduced, checkPrint);
+    strideProducedUpdatePhi->addIncoming(strideProduced, updateLastStartPos);
+
+    blockNo->addIncoming(nextBlockNo, nextBlock);
+    strideProduced->addIncoming(strideProducedUpdatePhi, nextBlock);
+    b->CreateCondBr(b->CreateICmpNE(nextBlockNo, sz_BLOCKS_PER_STRIDE), maskInit, strideProcessed);
+
+    b->SetInsertPoint(strideProcessed);
+    strideNo->addIncoming(nextStrideNo, strideProcessed);
+    segProducedPhi->addIncoming(strideProducedUpdatePhi, strideProcessed);
+    segProcessedPhi->addIncoming(segProcessedUpdate, strideProcessed);
+
+    b->CreateCondBr(b->CreateICmpNE(nextStrideNo, numOfStrides), startSegment, stridesDone);
+
+    b->SetInsertPoint(stridesDone);
+    b->CreateCondBr(b->CreateICmpEQ(b->getScalarField("lastKnownStart"), sz_ZERO), segmentDone, finalFiltering);
+    b->SetInsertPoint(finalFiltering);
+    Value * const startPos = b->getScalarField("lastKnownStart");
+    Value * const size = b->CreateSub(segProcessedUpdate, startPos);
+    // b->CallPrintInt("produced-stridesDone", strideProducedUpdatePhi);
+    // b->CallPrintInt("startPos-stridesDone", startPos);
+    // b->CallPrintInt("size-stridesDone", size);
+    b->CreateMemCpy(b->getRawOutputPointer("filtereData", strideProducedUpdatePhi), b->getRawInputPointer("byteData", startPos), size, 1);
+    b->setScalarField("lastKnownStart", sz_ZERO);
+    b->CreateBr(segmentDone);
+    b->SetInsertPoint(segmentDone);
+}
