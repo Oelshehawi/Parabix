@@ -185,9 +185,10 @@ EmitMatchesEngine::EmitMatchesEngine(BaseDriver &driver)
     mFileSuffix = mInitialTab ? "\t:" : ":";
 }
 
-ZTFGrepEngine::ZTFGrepEngine(BaseDriver &driver, bool fullyDecompress)
+ZTFGrepEngine::ZTFGrepEngine(BaseDriver &driver, bool fullyDecompress, bool useNewFBM)
 : GrepEngine(driver), 
     mFullyDecompressMode(fullyDecompress),
+    mUseNewFBM(useNewFBM),
     mCmpLineBreakStream(nullptr),
     mCmpU8index(nullptr),
     mCmpGCB_stream(nullptr),
@@ -438,16 +439,16 @@ void ZTFGrepEngine::getDecompressedBytes(const std::unique_ptr<ProgramBuilder> &
             u8bytes = output_bytes;
         }
     }
-    if(useFilterByMask) {
+    if (mUseNewFBM) {
+        P->CreateKernelCall<FilterByMask_new>(hashtableSpan, u8bytes, decoded_bytes);
+    }
+    else {
         StreamSet * const decoded = P->CreateStreamSet(8);
         // P->CreateKernelCall<S2PKernel>(u8bytes, decoded);
         Selected_S2P(P, u8bytes, decoded);
         StreamSet * const decoded_basis = P->CreateStreamSet(8);
         FilterByMask(P, hashtableSpan, decoded, decoded_basis);
         P->CreateKernelCall<P2SKernel>(decoded_basis, decoded_bytes);
-    }
-    else {
-        P->CreateKernelCall<FilterByMask_new>(hashtableSpan, u8bytes, decoded_bytes);
     }
     return;
 }

@@ -105,6 +105,9 @@ static cl::opt<BinaryFilesMode, true> BinaryFilesOption("binary-files", cl::desc
 bool FullyDecompressFlag;
 static cl::opt<bool, true> ZTFGrepOption("ZTF-full-decompress", cl::location(FullyDecompressFlag), cl::desc("Fully decompress ZTF-compressed file before checking for matched"), cl::cat(Input_Options), cl::init(false));
 
+bool UseNewFilterByMask;
+static cl::opt<bool, true> SeqFilterByMaskOption("new-filter-by-mask", cl::location(UseNewFilterByMask), cl::desc("Use sequential filter by mask"), cl::cat(Input_Options), cl::init(false));
+
 
     
 /*

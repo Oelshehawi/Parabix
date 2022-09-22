@@ -257,7 +257,7 @@ private:
 
 class ZTFGrepEngine final : public GrepEngine {
 public:
-    ZTFGrepEngine(BaseDriver & driver, bool fullyDecompress);
+    ZTFGrepEngine(BaseDriver & driver, bool fullyDecompress, bool mUseNewFBM);
     void addExternalStreams(const std::unique_ptr<kernel::ProgramBuilder> & P, std::unique_ptr<kernel::GrepKernelOptions> & options, re::RE * regexp, kernel::StreamSet * indexMask = nullptr);
     void getDecompressedBytes(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * const ByteStream, kernel::StreamSet * const decoded_bytes, bool fullyDecompress);
     void ZTFGrepPipeline(const std::unique_ptr<kernel::ProgramBuilder> &P, kernel::StreamSet * const ByteStream, kernel::StreamSet * const decoded_byteStream, bool matchOnly = false);
@@ -269,6 +269,7 @@ public:
     uint64_t doGrep(const std::vector<std::string> & fileNames, std::ostringstream & strm) override;
     protected:
     bool mFullyDecompressMode;
+    bool mUseNewFBM;
     kernel::StreamSet * mCmpLineBreakStream;
     kernel::StreamSet * mCmpU8index;
     kernel::StreamSet * mCmpGCB_stream;
