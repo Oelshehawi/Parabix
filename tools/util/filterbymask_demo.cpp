@@ -101,12 +101,14 @@ void MaskKernel::generateMultiBlockLogic(KernelBuilder & b, Value * const numOfS
     compressed[i] = b.mvmd_compress(fw, bytepack[i], maskField);
     b.CallPrintRegister("Compressed:", compressed[i]);
 
+    b.storeOutputStreamBlock("outputStream", ZERO, b.getInt32(i), offset, compressed[i]);
+
     // Calculate the address to store the compressed data
-    Value * storeAddr = b.CreateGEP(b.getInt8Ty(), output_ptr, offset);
-    storeAddr = b.CreateBitCast(storeAddr, bitBlockPtrTy);
+    // Value * storeAddr = b.CreateGEP(b.getInt8Ty(), output_ptr, offset);
+    // storeAddr = b.CreateBitCast(storeAddr, bitBlockPtrTy);
     
-    // Store the compressed data at the calculated address
-    b.CreateStore(compressed[i], storeAddr);
+    // // Store the compressed data at the calculated address
+    // b.CreateStore(compressed[i], storeAddr);
 
     // Update the produced item count
     Value * unitsGenerated = b.getProducedItemCount("byteStream");

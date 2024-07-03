@@ -3,6 +3,9 @@
 
 # module: util
 
+set(CMAKE_BUILD_TYPE Debug)
+set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g")
+
 parabix_add_executable(
 NAME
     hexlines
@@ -61,3 +64,5 @@ DEPS
     kernel.util
     toolchain
 )
+
+target_compile_options(filterbymask_demo PRIVATE -g)
