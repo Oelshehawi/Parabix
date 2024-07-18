@@ -28,23 +28,22 @@ class PackKernel final : public MultiBlockKernel {
 public:
     PackKernel(KernelBuilder & b,
               StreamSet * const byteStream,
-              StreamSet * const Packed);
+              StreamSet * const Merged);
     static constexpr unsigned fw = 8;
-    static constexpr unsigned inputRate = 2;
-    static constexpr unsigned outputRate = 1;
+    static constexpr unsigned inputRate = 1;
+    static constexpr unsigned outputRate = 2;
 protected:
     void generateMultiBlockLogic(KernelBuilder & b, llvm::Value * const numOfStrides) override;
 
 };
 
-
-PackKernel::PackKernel(KernelBuilder & b, StreamSet * const byteStream, StreamSet * const Packed)
+PackKernel::PackKernel(KernelBuilder & b, StreamSet * const byteStream, StreamSet * const Merged)
 : MultiBlockKernel(b, "pack_kernel",
 {Binding{"byteStream", byteStream, FixedRate(inputRate)}},
-    {Binding{"Packed", Packed, FixedRate(outputRate)}}, {}, {}, {})  {}
-
+    {Binding{"Merged", Merged, FixedRate(outputRate)}}, {}, {}, {})  {}
 
 void PackKernel::generateMultiBlockLogic(KernelBuilder & b, Value * const numOfStrides) {
+    llvm::errs() << "Generating multi-block logic\n";
     const unsigned inputPacksPerStride = fw * inputRate;
     const unsigned outputPacksPerStride = fw * outputRate;
 
@@ -52,7 +51,8 @@ void PackKernel::generateMultiBlockLogic(KernelBuilder & b, Value * const numOfS
     BasicBlock * packLoop = b.CreateBasicBlock("packLoop");
     BasicBlock * packFinalize = b.CreateBasicBlock("packFinalize");
     Constant * const ZERO = b.getSize(0);
-    Value * numOfBlocks = numOfStrides;
+    // how many blocks of data; termination condition of while loop
+    Value * numOfBlocks = numOfStrides;  
     if (getStride() != b.getBitBlockWidth()) {
         numOfBlocks = b.CreateShl(numOfStrides, b.getSize(std::log2(getStride()/b.getBitBlockWidth())));
         llvm::errs() << "stride = " << getStride() << "\n";
@@ -61,21 +61,31 @@ void PackKernel::generateMultiBlockLogic(KernelBuilder & b, Value * const numOfS
     b.SetInsertPoint(packLoop);
     PHINode * blockOffsetPhi = b.CreatePHI(b.getSizeTy(), 2);
     blockOffsetPhi->addIncoming(ZERO, entry);
+
     Value * bytepack[inputPacksPerStride];
     for (unsigned i = 0; i < inputPacksPerStride; i++) {
+        llvm::errs() << "Loading input stream pack " << i << "\n";
         bytepack[i] = b.loadInputStreamPack("byteStream", ZERO, b.getInt32(i), blockOffsetPhi);
     }
-    Value * packed[outputPacksPerStride];
-    for (unsigned i = 0; i < outputPacksPerStride; i++) {
-        packed[i] = b.hsimd_packh(16, bytepack[2*i], bytepack[2*i+1]);
-        b.storeOutputStreamPack("Packed", ZERO, b.getInt32(i), blockOffsetPhi, packed[i]);
+
+    Value * duplicated[outputPacksPerStride];
+
+    for (unsigned i = 0; i < inputPacksPerStride; i++) {
+        llvm::errs() << "Duplicating input pack " << i << "\n";
+        duplicated[2*i] = b.esimd_mergel(fw, bytepack[i], bytepack[i]);
+        duplicated[2*i+1] = b.esimd_mergeh(fw, bytepack[i], bytepack[i]);
+
+        b.storeOutputStreamPack("Merged", ZERO, b.getInt32(2*i), blockOffsetPhi, duplicated[2*i]);
+        b.storeOutputStreamPack("Merged", ZERO, b.getInt32(2*i+1), blockOffsetPhi, duplicated[2*i+1]);
     }
+
     Value * nextBlk = b.CreateAdd(blockOffsetPhi, b.getSize(1));
     blockOffsetPhi->addIncoming(nextBlk, packLoop);
     Value * moreToDo = b.CreateICmpNE(nextBlk, numOfBlocks);
 
     b.CreateCondBr(moreToDo, packLoop, packFinalize);
     b.SetInsertPoint(packFinalize);
+    llvm::errs() << "Finished generating multi-block logic\n";
 }
 
 typedef void (*PackDemoFunctionType)(uint32_t fd);
@@ -90,16 +100,16 @@ PackDemoFunctionType packdemo_gen (CPUDriver & driver) {
     // Source data
     StreamSet * const codeUnitStream = P->CreateStreamSet(1, 8);
     P->CreateKernelCall<ReadSourceKernel>(fileDescriptor, codeUnitStream);
+    SHOW_BYTES(codeUnitStream);
 
-    StreamSet * const packedStream = P->CreateStreamSet(1, 8);
-    P->CreateKernelCall<PackKernel>(codeUnitStream, packedStream);
+    StreamSet * const mergedStream = P->CreateStreamSet(1, 8);
+    P->CreateKernelCall<PackKernel>(codeUnitStream, mergedStream);
+    SHOW_BYTES(mergedStream);
 
-    P->CreateKernelCall<StdOutKernel>(packedStream);
+    P->CreateKernelCall<StdOutKernel>(mergedStream);
 
     return reinterpret_cast<PackDemoFunctionType>(P->compile());
 }
-
-
 
 int main(int argc, char *argv[]) {
     codegen::ParseCommandLineOptions(argc, argv, {&PackDemoOptions, codegen::codegen_flags()});

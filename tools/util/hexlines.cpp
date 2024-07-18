@@ -193,13 +193,13 @@ HexLinesFunctionType generatePipeline(CPUDriver & pxDriver) {
     //  ReadSourceKernel is a Parabix Kernel that produces a stream of bytes
     //  from a file descriptor.
     P->CreateKernelCall<ReadSourceKernel>(fileDescriptor, ByteStream);
-    SHOW_BYTES(ByteStream);
+    SHOW_STREAM(ByteStream);
 
     //  The Parabix basis bits representation is created by the Parabix S2P kernel.
     //  S2P stands for serial-to-parallel.
     StreamSet * BasisBits = P->CreateStreamSet(8);
     P->CreateKernelCall<S2PKernel>(ByteStream, BasisBits);
-    SHOW_BIXNUM(BasisBits);
+    SHOW_STREAM(BasisBits);
 
     //  We need to know which input positions are LFs and which are not.
     //  The nonLF positions need to be expanded to generate two hex digits each.
