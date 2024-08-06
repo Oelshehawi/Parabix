@@ -18,6 +18,7 @@
 #include <cstring>      // C-style string operations
 #include <llvm/IR/Type.h>
 #include <llvm/IR/DerivedTypes.h>
+#include <signal.h>
 
 #define SHOW_STREAM(name) if (codegen::EnableIllustrator) P->captureBitstream(#name, name)
 #define SHOW_BIXNUM(name) if (codegen::EnableIllustrator) P->captureBixNum(#name, name)
@@ -37,109 +38,181 @@ using namespace codegen;
     Output stream:   ...a.b...cde..f..     . represents 0
 */
 
-
-
-//  These declarations are for command line processing.
-//  See the LLVM CommandLine 2.0 Library Manual https://llvm.org/docs/CommandLine.html
 static cl::OptionCategory spreadbymaskOptions("spreadbymask Options.", "spreadbymask Options");
 static cl::opt<std::string> inputFile(cl::Positional, cl::desc("<input file>"), cl::Required, cl::cat(spreadbymaskOptions));
 static cl::opt<std::string> maskFile(cl::Positional, cl::desc("<mask file>"), cl::Required, cl::cat(spreadbymaskOptions));
 
-
-class spreadbymaskKernel final : public MultiBlockKernel {
+class SpreadByMask final : public BlockOrientedKernel {
 public:
-    spreadbymaskKernel(KernelBuilder & b, StreamSet * const maskStream, StreamSet * const byteStream, StreamSet * const spreadStream)
-    : MultiBlockKernel(b, "spreadbymask_kernel",
-    {Binding{"maskStream", maskStream, FixedRate(1)}, Binding{"byteStream", byteStream, FixedRate(1)}},
-    {Binding{"spreadStream", spreadStream, PopcountOf("maskStream")}}, {}, {}, {}) {}
+    SpreadByMask(KernelBuilder & b, StreamSet * const input, StreamSet * const mask, StreamSet * const output);
+    void generateDoBlockMethod(KernelBuilder & b) override;
+};
 
-protected:
-void generateMultiBlockLogic(KernelBuilder & b, llvm::Value * const numOfStrides) override {
-    const unsigned fieldWidth = 32;
-    Value * mask = b.loadInputStreamBlock("maskStream", b.getInt32(0));
-    Value * input = b.loadInputStreamBlock("byteStream", b.getInt32(0));
+SpreadByMask::SpreadByMask(KernelBuilder & b, 
+                           StreamSet * const input,
+                           StreamSet * const mask,
+                           StreamSet * const output)
+    : BlockOrientedKernel(b, "spread_by_mask",
+    {Binding{"input", input},
+     Binding{"mask", mask}},
+    {Binding{"output", output}},
+    {}, {}, {}) {
+    assert(input->getNumElements() == 1);
+    assert(mask->getNumElements() == 1);
+    assert(output->getNumElements() == 1);
 
-    //  bnc is an object that can perform arithmetic on sets of parallel bit streams
+     if (input == nullptr || mask == nullptr || output == nullptr) {
+        throw std::runtime_error("SpreadByMask: Null stream set pointer");
+    }
+    if (input->getNumElements() != 1 || mask->getNumElements() != 1 || output->getNumElements() != 1) {
+        throw std::runtime_error("SpreadByMask: All stream sets must have exactly one element");
+    }
+}
+
+void SpreadByMask::generateDoBlockMethod(KernelBuilder & b) {
     
+    llvm::errs() << "Entering generateDoBlockMethod\n";
 
-     /*Iterate over each bit in mask
-        for (unsigned i = 0; i < 16; i++) {
-            // Check if mask bit is 1
-            Value * mask_bit = b.getValue(mask, i);
-            if (b.getbit(mask, i) == 1) {
-                // If mask bit is 1, copy corresponding input bit to output
-                Value * input_bit = b.getValue(input, i);
-                spread = b.or(spread, input_bit);
-            }
-        }*/
+    Value * const blockSize = b.getSize(b.getBitBlockWidth());
+
+    llvm::errs() << "Block size: "<< *blockSize << "\n";
+
+    BasicBlock * const entry = b.GetInsertBlock();
+    BasicBlock * const processBlock = b.CreateBasicBlock("processBlock");
+    BasicBlock * const exit = b.CreateBasicBlock("exit");
+
+    b.CreateBr(processBlock);
+    b.SetInsertPoint(processBlock);
+
+    PHINode * const idx = b.CreatePHI(b.getSizeTy(), 2);
+    idx->addIncoming(b.getSize(0), entry);
+
+    llvm::errs() << "Loading input and mask bits\n";
+    Value * const inputBits = b.loadInputStreamBlock("input", b.getInt32(0), idx);
+    Value * const maskBits = b.loadInputStreamBlock("mask", b.getInt32(0), idx);
 
 
-    // Initialize the spread stream with zeros
-        Type * vec512Ty = VectorType::get(b.getInt32Ty(), int); // 16 * 32 = 512 bits
-        Value * spreadVec = Constant::getNullValue(vec512Ty);
-
-        // Create AVX-512 intrinsics to load mask and input vectors
-        Function * fn = b.GetInsertBlock()->getParent();
-        IRBuilder<> builder(b.getContext());
-        builder.SetInsertPoint(b.GetInsertBlock());
-
-        // Load mask and input as vectors
-        Value * maskVec = builder.CreateBitCast(mask, vec512Ty);
-        Value * inputVec = builder.CreateBitCast(input, vec512Ty);
-
-        // Iterate over each bit in the mask and spread the corresponding input bits
-        for (int i = 0; i < 512; i++) {
-            // Extract the bit from the mask
-            Value * maskBit = builder.CreateAnd(maskVec, ConstantInt::get(vec512Ty, 1 << i));
-            maskBit = builder.CreateICmpNE(maskBit, Constant::getNullValue(vec512Ty));
-            if (maskBit) {
-                // Extract the corresponding input bit
-                Value * inputBit = builder.CreateAnd(inputVec, ConstantInt::get(vec512Ty, 1 << i));
-                inputBit = builder.CreateICmpNE(inputBit, Constant::getNullValue(vec512Ty));
-                // Set the corresponding bit in the spread stream
-                spreadVec = builder.CreateOr(spreadVec, builder.CreateShl(inputBit, i));
-            }
-        }
-
-        // Store the result in the output stream
-        Value * spreadCast = builder.CreateBitCast(spreadVec, b.getInt32Ty());
-        b.storeOutputStreamBlock("spreadStream", b.getInt32(0), spreadCast);
+    if(!inputBits || !maskBits){
+        llvm::errs() << "Error: simd_pdep returned null\n";
+        return;  
     }
 
-};
+    llvm::errs() << "Performing simd_pdep\n";
+    // Perform the spread operation using AVX-512 pdep instruction
+    Value * spreadBits = b.simd_pdep(b.getBitBlockWidth(), inputBits, maskBits);
+
+    if(!spreadBits) {
+        llvm::errs() << "error: simd_pdep returned null\n";
+    }
+
+    llvm::errs() << "Storing output\n";
+
+    b.storeOutputStreamBlock("output", b.getInt32(0), idx, spreadBits);
+
+    Value * const nextIdx = b.CreateAdd(idx, b.getSize(1));
+    idx->addIncoming(nextIdx, processBlock);
+
+    Value * const done = b.CreateICmpEQ(nextIdx, blockSize);
+    b.CreateCondBr(done, exit, processBlock);
+
+    b.SetInsertPoint(exit);
+    b.CreateRetVoid();
+
+    llvm::errs() << "Exiting generateDoBlockMethod\n";
+}
 
 typedef void (*spreadbymaskFunctionType)(uint32_t fd, uint32_t mask_fd);
 
 spreadbymaskFunctionType spreadbymask_gen(CPUDriver & driver) {
 
+    llvm::errs() << "Entering spreadbymask Gen\n";
     auto & b = driver.getBuilder();
     auto P = driver.makePipeline({Binding{b.getInt32Ty(), "inputFileDescriptor"}, Binding{b.getInt32Ty(), "maskFileDescriptor"}}, {});
+
+    if (!P) {
+        llvm::errs() << "Error: Failed to create pipeline\n";
+        return nullptr;
+    }
 
     Scalar * inputFileDescriptor = P->getInputScalar("inputFileDescriptor");
     Scalar * maskFileDescriptor = P->getInputScalar("maskFileDescriptor");
 
 
+    if (!inputFileDescriptor || !maskFileDescriptor) {
+        llvm::errs() << "Error: Failed to get file descriptors\n";
+        return nullptr;
+    }
+
+    llvm::errs() << "Creating mask stream\n";
     StreamSet * const maskStream = P->CreateStreamSet(1, 8);
+
+    if (!maskStream) {
+        llvm::errs() << "Error: Failed to create mask stream\n";
+        return nullptr;
+    }
+
+
     P->CreateKernelCall<ReadSourceKernel>(maskFileDescriptor, maskStream);
     SHOW_BIXNUM(maskStream);
 
+    llvm::errs() << "Creating byte stream\n";
     StreamSet * const byteStream = P->CreateStreamSet(1, 8);
+
+     if (!byteStream) {
+        llvm::errs() << "Error: Failed to create byte stream\n";
+        return nullptr;
+     }
+
     P->CreateKernelCall<ReadSourceKernel>(inputFileDescriptor, byteStream);
     SHOW_BYTES(byteStream);
 
+    llvm::errs() << "Creating spread stream\n";
     StreamSet * const spreadStream = P->CreateStreamSet(1, 8);
-    P->CreateKernelCall<spreadbymaskKernel>(maskStream, byteStream, spreadStream);
+
+    if (!spreadStream) {
+        llvm::errs() << "Error: Failed to create spread stream\n";
+        return nullptr;
+    }
+
+    llvm::errs() << "Creating SpreadByMask kernel\n";
+
+    try {
+        P->CreateKernelCall<SpreadByMask>(byteStream, maskStream, spreadStream);
+    } catch (const std::exception& e) {
+        llvm::errs() << "Error creating SpreadByMask kernel: " << e.what() << "\n";
+        return nullptr;
+    }
+
     SHOW_BYTES(spreadStream);
+
+    llvm::errs() << "Creating stdOutKernel\n";
 
     P->CreateKernelCall<StdOutKernel>(spreadStream);
 
-    return reinterpret_cast<spreadbymaskFunctionType>(P->compile());
+    llvm::errs() << "Compiling Pipeline\n";
+    spreadbymaskFunctionType func = nullptr;
+    try {
+        func = reinterpret_cast<spreadbymaskFunctionType>(P->compile());
+    } catch (const std::exception& e) {
+        llvm::errs() << "Error compiling pipeline: " << e.what() << "\n";
+        return nullptr;
+    }
 
-
-
+    llvm::errs() << "Exiting spreadbymask_gen\n";
+    return func;
 }
 
+
+void segfault_handler(int signal) {
+    llvm::errs() << "Caught segmentation fault (signal " << signal << ")\n";
+    exit(1);
+}
+
+
 int main(int argc, char *argv[]) {
+
+    signal(SIGSEGV, segfault_handler);
+
     codegen::ParseCommandLineOptions(argc, argv, {&spreadbymaskOptions, codegen::codegen_flags()});
     CPUDriver pxDriver("spreadbymask");
     const int fd = open(inputFile.c_str(), O_RDONLY);
@@ -154,12 +227,37 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    spreadbymaskFunctionType func = nullptr;
-    func = spreadbymask_gen(pxDriver);
-    func(fd,mask_fd);
+    llvm::errs() << "Generating spreadbymask function\n";
+
+    /*spreadbymaskFunctionType func = spreadbymask_gen(pxDriver);
+    if (func == nullptr) {
+        errs() << "Error: Failed to generate spreadbymask function\n";
+        close(fd);
+        close(mask_fd);
+        return 1;
+    }*/
+
+   spreadbymaskFunctionType fun = nullptr;
+   fun = spreadbymask_gen(pxDriver);
+   fun(fd,mask_fd);
+   close(fd);
+   close(mask_fd);
+
+    llvm::errs() <<"Executing spreadbymask function\n";
+
+    /*try {
+
+        if(fd < 0 || mask_fd < 0){
+            throw std::runtime_error("INvalid file descriptor");
+        }
+        func(fd, mask_fd);
+    } catch (const std::exception& e) {
+        errs() << "Error executing spreadbymask function: " << e.what() << "\n";
+    }catch(...){
+        errs() << "Unknown error occured during execution\n";
+    }
 
     close(fd);
-    close(mask_fd);
+    close(mask_fd);*/
     return 0;
 }
-
